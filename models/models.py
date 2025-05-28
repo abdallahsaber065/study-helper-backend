@@ -9,7 +9,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship, backref
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
-from v2.db_config import Base
+from db_config import Base
 
 # --- ENUM Types (mirroring PostgreSQL ENUMs) ---
 class UserRoleEnum(enum.Enum):

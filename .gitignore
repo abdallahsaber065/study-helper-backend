@@ -5,22 +5,70 @@ __pycache__/
 
 # Environment
 .env
-.venv
+.venv/
 env/
 venv/
+*.env
+*.env.*
 
 # Cache
 cache/
+*.log
+*.cache/
 
 # Database
 *.db
 *.sqlite3
 
-**.pdf
-**.pyc
+# FastAPI
+*.pid
+*.sock
+*.pem
+*.crt
+*.key
 
-.vscode
+# IDE and editor settings
+.idea/
+.vscode/
+*.code-workspace
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
+*.bak
+*.orig
+
+# Coverage reports
+.coverage
+htmlcov/
+.coverage.*
+
+# Testing
+.tox/
+.nox/
+pytest_cache/
+test-results.xml
+junit.xml
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+*.egg
+*.whl
+
+# Static and media files
+staticfiles/
+mediafiles/
+
+# Miscellaneous
+.DS_Store
+Thumbs.db
+
+# Documentation
 mcq
 summaries
 
+# Local configuration files
 .cursorignore

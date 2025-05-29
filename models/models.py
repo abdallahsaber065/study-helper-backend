@@ -160,6 +160,28 @@ class PhysicalFile(Base):
     cache_entries = relationship("GeminiFileCache", back_populates="physical_file", cascade="all, delete-orphan")
     community_subject_files = relationship("CommunitySubjectFile", back_populates="physical_file", cascade="all, delete-orphan")
 
+
+# Caching Model
+class GeminiFileCache(Base):
+    __tablename__ = "gemini_file_cache"
+    __table_args__ = (
+        UniqueConstraint("physical_file_id", "api_key_id", "gemini_file_uri", name="uq_gemini_file_cache"),
+    )
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    physical_file_id = Column(Integer, ForeignKey("physical_file.id"), nullable=False)
+    api_key_id = Column(Integer, ForeignKey("ai_api_key.id"), nullable=False)
+    gemini_file_uri = Column(String(255), nullable=False, unique=True)
+    gemini_display_name = Column(String(255), nullable=False)
+    gemini_file_unique_name = Column(String(255), nullable=False, unique=True)
+    expiration_time = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now()
+    )  # DB trigger handles updates
+
+    physical_file = relationship("PhysicalFile", back_populates="cache_entries")
+
+
 class UserFileAccess(Base):
     __tablename__ = "user_file_access"
     __table_args__ = (PrimaryKeyConstraint("user_id", "physical_file_id"),)
@@ -337,20 +359,6 @@ class ContentAnalytics(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now()) # DB trigger handles updates
 
-# Caching Model
-class GeminiFileCache(Base):
-    __tablename__ = "gemini_file_cache"
-    __table_args__ = (UniqueConstraint("physical_file_id", "processing_type", name="uq_gemini_file_cache_file_processing"),)
-
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    physical_file_id = Column(Integer, ForeignKey("physical_file.id"), nullable=False)
-    processing_type = Column(String(50), nullable=False)
-    gemini_response = Column(JSONB, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now()) # DB trigger handles updates
-
-    physical_file = relationship("PhysicalFile", back_populates="cache_entries")
-
 # --- Community Feature Models ---
 
 class Community(Base):
@@ -481,7 +489,6 @@ class UserPreference(Base):
     user = relationship("User", back_populates="preferences")
 
 
-
 __all__ = [
 "User", "UserSession", "AiApiKey", "Subject", "PhysicalFile", "UserFileAccess",
 "Summary", "McqQuestionTagLink", "McqQuestion", "QuestionTag",
@@ -492,4 +499,3 @@ __all__ = [
 "UserRoleEnum", "DifficultyLevelEnum", "AiProviderEnum", "ContentTypeEnum",
 "CommunityRoleEnum", "CommunityFileCategoryEnum", "NotificationTypeEnum", "RatingValueEnum"
 ]
-

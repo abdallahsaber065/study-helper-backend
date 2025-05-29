@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from fastapi import HTTPException, status
-from models.models import AiApiKey, GeminiFileCache, AiProviderEnum, PhysicalFile, UserFileAccess, UserFreeApiUsage
+from models.models import AiApiKey, GeminiFileCache, AiProviderEnum, PhysicalFile, UserFileAccess, UserFreeApiUsage, User
 from schemas.ai_cache import GeminiFileCacheCreate
 from core.config import settings
 from core.security import verify_password, get_password_hash
@@ -45,6 +45,8 @@ class AIManager(Generic[T]):
         Returns:
             str: The decrypted API key or None if not found
         """
+        print(f"🔍 DEBUG: Getting API key for user {user_id}, provider {provider}")
+        
         # Try to get a user-specific key first
         api_key_record = self.db.query(AiApiKey).filter(
             AiApiKey.user_id == user_id,
@@ -53,11 +55,14 @@ class AIManager(Generic[T]):
         ).first()
         
         if api_key_record:
+            print(f"✅ DEBUG: Found user-specific API key")
             # Decrypt the API key - for now we'll just return the encrypted version
             # In a real implementation, you'd decrypt this
             return api_key_record.encrypted_api_key
         
-        # Fall back to system-wide key from settings, but check free tier limits
+        print(f"🔍 DEBUG: No user-specific key found, checking free tier limits...")
+        
+        # Check free tier limits
         # Get or create user's free tier usage record
         usage_record = self.db.query(UserFreeApiUsage).filter(
             UserFreeApiUsage.user_id == user_id,
@@ -65,6 +70,7 @@ class AIManager(Generic[T]):
         ).first()
         
         if not usage_record:
+            print(f"🔍 DEBUG: Creating new usage record for user {user_id}")
             # Create a new usage record if one doesn't exist
             usage_record = UserFreeApiUsage(
                 user_id=user_id,
@@ -78,18 +84,49 @@ class AIManager(Generic[T]):
         # Check if user has exceeded their free tier limit
         free_tier_limit = settings.free_tier_gemini_limit if provider == AiProviderEnum.Google else settings.free_tier_openai_limit
         
+        print(f"🔍 DEBUG: Usage count: {usage_record.usage_count}, Limit: {free_tier_limit}")
+        
         if usage_record.usage_count >= free_tier_limit:
+            print(f"❌ DEBUG: User exceeded free tier limit")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"You have reached your free tier limit ({free_tier_limit}) for {provider.value}. Please add your own API key."
             )
         
-        # Return the system key
-        if provider == AiProviderEnum.Google:
-            return settings.gemini_api_key
-        elif provider == AiProviderEnum.OpenAI:
-            return settings.openai_api_key
+        # Try to get the key from the free user
+        free_username = os.getenv("DEFAULT_FREE_USER_USERNAME")
+        print(f"🔍 DEBUG: Looking for free user with username: {free_username}")
         
+        if free_username:
+            free_user = self.db.query(User).filter(User.username == free_username).first()
+            if free_user:
+                print(f"✅ DEBUG: Found free user with ID: {free_user.id}")
+                free_user_key = self.db.query(AiApiKey).filter(
+                    AiApiKey.user_id == free_user.id,
+                    AiApiKey.provider_name == provider,
+                    AiApiKey.is_active == True
+                ).first()
+                
+                if free_user_key:
+                    print(f"✅ DEBUG: Found free user's API key")
+                    return free_user_key.encrypted_api_key
+                else:
+                    print(f"❌ DEBUG: Free user has no API key for {provider}")
+            else:
+                print(f"❌ DEBUG: Free user not found")
+        
+        # Fall back to system key if free user key not found
+        print(f"🔍 DEBUG: Falling back to system environment key")
+        if provider == AiProviderEnum.Google:
+            system_key = settings.gemini_api_key
+            print(f"✅ DEBUG: Using system Gemini key: {system_key[:20]}..." if system_key else "❌ DEBUG: No system Gemini key")
+            return system_key
+        elif provider == AiProviderEnum.OpenAI:
+            system_key = settings.openai_api_key
+            print(f"✅ DEBUG: Using system OpenAI key: {system_key[:20]}..." if system_key else "❌ DEBUG: No system OpenAI key")
+            return system_key
+        
+        print(f"❌ DEBUG: No API key found for provider {provider}")
         return None
     
     async def increment_free_tier_usage(self, user_id: int, provider: AiProviderEnum) -> None:
@@ -215,17 +252,27 @@ class AIManager(Generic[T]):
             AiApiKey.is_active == True
         ).first()
         
-        # If no user-specific key, create a temporary record for the system key
+        # If no user-specific key, try to get the free user's key
         if not api_key_record:
-            api_key_record = AiApiKey(
-                user_id=user_id,
-                provider_name=AiProviderEnum.Google,
-                encrypted_api_key=get_password_hash(settings.gemini_api_key or ""),
-                is_active=True
+            # First get the free user by username
+            free_user = self.db.query(User).filter(
+                User.username == settings.default_free_user_username
+            ).first()
+            
+            if free_user:
+                # Get the free user's API key
+                api_key_record = self.db.query(AiApiKey).filter(
+                    AiApiKey.user_id == free_user.id,
+                    AiApiKey.provider_name == AiProviderEnum.Google,
+                    AiApiKey.is_active == True
+                ).first()
+        
+        # If still no API key found, raise an error
+        if not api_key_record:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No API key available for Google Gemini"
             )
-            self.db.add(api_key_record)
-            self.db.commit()
-            self.db.refresh(api_key_record)
         
         # Check if the file is already in the cache and not expired
         cache_entry = self.db.query(GeminiFileCache).filter(

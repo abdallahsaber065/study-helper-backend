@@ -23,18 +23,18 @@ client = TestClient(app)
 
 # Test data
 TEST_USER1 = {
-    "username": "fileuser",
+    "username": "fileuser_test2",
     "first_name": "File",
     "last_name": "User",
-    "email": "file@example.com",
+    "email": "file_test2@example.com",
     "password": "filepassword123"
 }
 
 TEST_USER2 = {
-    "username": "shareuser",
+    "username": "shareuser_test11",
     "first_name": "Share",
     "last_name": "User",
-    "email": "share@example.com",
+    "email": "share_test11@example.com",
     "password": "sharepassword123"
 }
 
@@ -173,6 +173,24 @@ This test demonstrates the functionality of the AI-powered summary generation sy
     
     # Share file with User2
     print("\n9. Sharing file with User2...")
+    
+    # First confirm the current user has admin access by checking file access list
+    response = client.get(f"/files/{file_id}/access", headers=user1_headers)
+    if response.status_code == 200:
+        access_list = response.json()
+        print(f"   ✅ Successfully retrieved file access list")
+        for entry in access_list:
+            if entry['user_id'] == user1_id and entry['access_level'] == "admin":
+                print(f"   ✅ Confirmed user1 has admin access to the file")
+                break
+        else:
+            print(f"   ❌ User1 doesn't have admin access to their uploaded file")
+            return
+    else:
+        print(f"   ❌ Failed to retrieve access list: {response.json()}")
+        return
+    
+    # Now share the file
     response = client.post(
         f"/files/{file_id}/share",
         data={"user_id": user2_id, "access_level": "read"},

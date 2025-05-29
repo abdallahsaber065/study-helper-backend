@@ -72,3 +72,4 @@ summaries
 
 # Local configuration files
 .cursorignore
+.github/instructions

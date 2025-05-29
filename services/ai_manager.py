@@ -12,7 +12,7 @@ from fastapi import HTTPException, status
 from models.models import AiApiKey, GeminiFileCache, AiProviderEnum, PhysicalFile, UserFileAccess, UserFreeApiUsage, User
 from schemas.ai_cache import GeminiFileCacheCreate
 from core.config import settings
-from core.security import verify_password, get_password_hash
+from core.security import verify_password, get_password_hash, decrypt_api_key
 
 T = TypeVar('T', bound=BaseModel)
 
@@ -56,9 +56,8 @@ class AIManager(Generic[T]):
         
         if api_key_record:
             print(f"✅ DEBUG: Found user-specific API key")
-            # Decrypt the API key - for now we'll just return the encrypted version
-            # In a real implementation, you'd decrypt this
-            return api_key_record.encrypted_api_key
+            # Decrypt the API key
+            return decrypt_api_key(api_key_record.encrypted_api_key)
         
         print(f"🔍 DEBUG: No user-specific key found, checking free tier limits...")
         
@@ -109,7 +108,7 @@ class AIManager(Generic[T]):
                 
                 if free_user_key:
                     print(f"✅ DEBUG: Found free user's API key")
-                    return free_user_key.encrypted_api_key
+                    return decrypt_api_key(free_user_key.encrypted_api_key)
                 else:
                     print(f"❌ DEBUG: Free user has no API key for {provider}")
             else:

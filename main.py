@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from db_config import get_db, engine
 from models.models import Base, User, AiApiKey, AiProviderEnum
 from app import app
-from core.security import get_password_hash
+from core.security import get_password_hash, encrypt_api_key
 import logging
 from core.config import settings
 
@@ -93,7 +93,7 @@ async def startup_db_client():
                     api_key = AiApiKey(
                         user_id=free_user.id,
                         provider_name=AiProviderEnum.Google,
-                        encrypted_api_key=gemini_api_key,
+                        encrypted_api_key=encrypt_api_key(gemini_api_key),
                         is_active=True
                     )
                     db.add(api_key)

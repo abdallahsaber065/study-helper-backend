@@ -6,6 +6,7 @@ pydantic-settings
 google-genai
 python-dotenv
 python-multipart
+google-generativeai
 httpx
 psycopg2-binary
 sqlalchemy

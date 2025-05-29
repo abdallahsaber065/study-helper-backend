@@ -51,4 +51,24 @@ class AiApiKeyRead(AiApiKeyBase):
     last_used_at: Optional[datetime] = None
 
     class Config:
-        from_attributes = True 
+        from_attributes = True
+
+
+class UserFreeApiUsageRead(BaseModel):
+    """Schema for reading user's free tier API usage."""
+    user_id: int = Field(..., description="ID of the user")
+    api_provider: str = Field(..., description="Name of the AI provider")
+    usage_count: int = Field(..., description="Number of times the free tier API has been used")
+    last_used_at: Optional[datetime] = Field(None, description="When the API was last used")
+    limit: int = Field(..., description="Maximum allowed usage for this provider")
+    remaining: int = Field(..., description="Remaining usage for this provider")
+
+    class Config:
+        from_attributes = True
+
+
+class UserApiUsageSummary(BaseModel):
+    """Summary of user's API usage for all providers."""
+    gemini: Optional[UserFreeApiUsageRead] = Field(None, description="Gemini API usage")
+    openai: Optional[UserFreeApiUsageRead] = Field(None, description="OpenAI API usage")
+    has_own_keys: bool = Field(False, description="Whether the user has their own API keys") 

@@ -1,15 +1,18 @@
 """
 User management routes.
 """
+import sys
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 
-from core.security import get_current_active_user
+from core.security import get_current_active_user, get_current_admin_user
 from db_config import get_db
-from models.models import User, UserRoleEnum
+from models.models import User, UserRoleEnum, AiApiKey, UserFreeApiUsage, AiProviderEnum
 from schemas.user import UserRead
+from schemas.ai_cache import UserApiUsageSummary, UserFreeApiUsageRead
+from core.config import settings
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
@@ -214,3 +217,62 @@ async def update_user_role(
     db.commit()
     
     return {"message": f"User {user.username} role updated from {old_role} to {new_role.value}"}
+
+
+@router.get("/me/api-usage", response_model=UserApiUsageSummary)
+async def get_my_api_usage(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get the current user's API usage.
+    
+    Returns:
+        UserApiUsageSummary: A summary of the user's API usage for all providers
+    """
+    # Check if user has their own API keys
+    has_own_keys = db.query(AiApiKey).filter(
+        AiApiKey.user_id == current_user.id,
+        AiApiKey.is_active == True
+    ).first() is not None
+    
+    # Get free tier usage for Gemini
+    gemini_usage = db.query(UserFreeApiUsage).filter(
+        UserFreeApiUsage.user_id == current_user.id,
+        UserFreeApiUsage.api_provider == AiProviderEnum.Google
+    ).first()
+    
+    # Get free tier usage for OpenAI
+    openai_usage = db.query(UserFreeApiUsage).filter(
+        UserFreeApiUsage.user_id == current_user.id,
+        UserFreeApiUsage.api_provider == AiProviderEnum.OpenAI
+    ).first()
+    
+    # Create response
+    response = UserApiUsageSummary(has_own_keys=has_own_keys)
+    
+    # Add Gemini usage if available
+    if gemini_usage:
+        gemini_limit = settings.free_tier_gemini_limit
+        response.gemini = UserFreeApiUsageRead(
+            user_id=current_user.id,
+            api_provider="Google",
+            usage_count=gemini_usage.usage_count,
+            last_used_at=gemini_usage.last_used_at,
+            limit=gemini_limit,
+            remaining=max(0, gemini_limit - gemini_usage.usage_count)
+        )
+    
+    # Add OpenAI usage if available
+    if openai_usage:
+        openai_limit = settings.free_tier_openai_limit
+        response.openai = UserFreeApiUsageRead(
+            user_id=current_user.id,
+            api_provider="OpenAI",
+            usage_count=openai_usage.usage_count,
+            last_used_at=openai_usage.last_used_at,
+            limit=openai_limit,
+            remaining=max(0, openai_limit - openai_usage.usage_count)
+        )
+    
+    return response

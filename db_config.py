@@ -13,8 +13,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 logger = getLogger("database")
-# Create cache directory if it doesn't exist
-os.makedirs("cache", exist_ok=True)
+
 
 # Construct database URL from environment variables
 DB_HOST = os.getenv("DB_HOST", "localhost")

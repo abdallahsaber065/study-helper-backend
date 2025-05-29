@@ -3,13 +3,13 @@ Central AI Manager service for handling interactions with AI providers.
 """
 import os
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, TypeVar, Type, Generic, List
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from fastapi import HTTPException, status
-from models.models import AiApiKey, GeminiFileCache, AiProviderEnum, PhysicalFile, UserFileAccess
+from models.models import AiApiKey, GeminiFileCache, AiProviderEnum, PhysicalFile, UserFileAccess, UserFreeApiUsage
 from schemas.ai_cache import GeminiFileCacheCreate
 from core.config import settings
 from core.security import verify_password, get_password_hash
@@ -57,13 +57,81 @@ class AIManager(Generic[T]):
             # In a real implementation, you'd decrypt this
             return api_key_record.encrypted_api_key
         
-        # Fall back to system-wide key from settings
+        # Fall back to system-wide key from settings, but check free tier limits
+        # Get or create user's free tier usage record
+        usage_record = self.db.query(UserFreeApiUsage).filter(
+            UserFreeApiUsage.user_id == user_id,
+            UserFreeApiUsage.api_provider == provider
+        ).first()
+        
+        if not usage_record:
+            # Create a new usage record if one doesn't exist
+            usage_record = UserFreeApiUsage(
+                user_id=user_id,
+                api_provider=provider,
+                usage_count=0
+            )
+            self.db.add(usage_record)
+            self.db.commit()
+            self.db.refresh(usage_record)
+        
+        # Check if user has exceeded their free tier limit
+        free_tier_limit = settings.free_tier_gemini_limit if provider == AiProviderEnum.Google else settings.free_tier_openai_limit
+        
+        if usage_record.usage_count >= free_tier_limit:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"You have reached your free tier limit ({free_tier_limit}) for {provider.value}. Please add your own API key."
+            )
+        
+        # Return the system key
         if provider == AiProviderEnum.Google:
             return settings.gemini_api_key
         elif provider == AiProviderEnum.OpenAI:
             return settings.openai_api_key
         
         return None
+    
+    async def increment_free_tier_usage(self, user_id: int, provider: AiProviderEnum) -> None:
+        """
+        Increment the free tier usage count for a user and provider.
+        
+        Args:
+            user_id: The ID of the user
+            provider: The AI provider
+        """
+        # Check if the user has their own API key
+        has_own_key = self.db.query(AiApiKey).filter(
+            AiApiKey.user_id == user_id,
+            AiApiKey.provider_name == provider,
+            AiApiKey.is_active == True
+        ).first() is not None
+        
+        # If they have their own key, don't increment free tier usage
+        if has_own_key:
+            return
+        
+        # Get user's free tier usage record
+        usage_record = self.db.query(UserFreeApiUsage).filter(
+            UserFreeApiUsage.user_id == user_id,
+            UserFreeApiUsage.api_provider == provider
+        ).first()
+        
+        if not usage_record:
+            # Create a new usage record if one doesn't exist
+            usage_record = UserFreeApiUsage(
+                user_id=user_id,
+                api_provider=provider,
+                usage_count=1,
+                last_used_at=datetime.now(timezone.utc)
+            )
+            self.db.add(usage_record)
+        else:
+            # Increment existing usage record
+            usage_record.usage_count += 1
+            usage_record.last_used_at = datetime.now(timezone.utc)
+        
+        self.db.commit()
     
     async def initialize_gemini_client(self, user_id: int) -> bool:
         """
@@ -163,7 +231,7 @@ class AIManager(Generic[T]):
         cache_entry = self.db.query(GeminiFileCache).filter(
             GeminiFileCache.physical_file_id == physical_file.id,
             GeminiFileCache.api_key_id == api_key_record.id,
-            (GeminiFileCache.expiration_time > datetime.now(datetime.UTC)) | (GeminiFileCache.expiration_time.is_(None))
+            (GeminiFileCache.expiration_time > datetime.now(timezone.utc)) | (GeminiFileCache.expiration_time.is_(None))
         ).first()
         
         # If valid cache entry exists, return it
@@ -208,7 +276,7 @@ class AIManager(Generic[T]):
                 # Update the expired entry
                 for field, value in cache_data.dict().items():
                     setattr(expired_entry, field, value)
-                expired_entry.updated_at = datetime.utcnow()
+                expired_entry.updated_at = datetime.now(timezone.utc)
                 self.db.commit()
                 self.db.refresh(expired_entry)
                 return expired_entry
@@ -279,7 +347,7 @@ class AIManager(Generic[T]):
                 cache_entry = await self.upload_file_to_gemini(physical_file, user_id)
                 
                 # Add file to contents
-                contents.append(cache_entry.gemini_file_unique_name)
+                contents.append(cache_entry.gemini_file_uri)
         
         # Add prompt to contents
         contents.append(prompt)
@@ -343,6 +411,9 @@ class AIManager(Generic[T]):
                     contents=contents
                 )
             
+            # Increment free tier usage count for system API key users
+            await self.increment_free_tier_usage(user_id, AiProviderEnum.Google)
+            
             # Update last_used_at for the API key
             api_key_record = self.db.query(AiApiKey).filter(
                 AiApiKey.user_id == user_id,
@@ -351,7 +422,7 @@ class AIManager(Generic[T]):
             ).first()
             
             if api_key_record:
-                api_key_record.last_used_at = datetime.now(datetime.UTC)
+                api_key_record.last_used_at = datetime.now(timezone.utc)
                 self.db.commit()
             
             # Return parsed response if schema provided, otherwise return text

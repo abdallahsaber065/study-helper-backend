@@ -100,6 +100,7 @@ class User(Base):
     community_memberships = relationship("CommunityMember", back_populates="user", cascade="all, delete-orphan")
     community_subjects_added = relationship("CommunitySubjectLink", back_populates="added_by_user", cascade="all, delete-orphan")
     community_files_uploaded = relationship("CommunitySubjectFile", back_populates="uploaded_by_user", cascade="all, delete-orphan")
+    free_api_usage = relationship("UserFreeApiUsage", back_populates="user", cascade="all, delete-orphan")
 
 class UserSession(Base):
     __tablename__ = "user_session"
@@ -488,12 +489,24 @@ class UserPreference(Base):
 
     user = relationship("User", back_populates="preferences")
 
+class UserFreeApiUsage(Base):
+    __tablename__ = "user_free_api_usage"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("user.id"), nullable=False, unique=True)
+    api_provider = Column(SAEnum(AiProviderEnum, name="ai_provider_enum", create_type=False), nullable=False)
+    usage_count = Column(Integer, nullable=False, server_default='0')
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now()) # DB trigger handles updates
+
+    user = relationship("User", back_populates="free_api_usage")
 
 __all__ = [
 "User", "UserSession", "AiApiKey", "Subject", "PhysicalFile", "UserFileAccess",
 "Summary", "McqQuestionTagLink", "McqQuestion", "QuestionTag",
 "McqQuizQuestionLink", "McqQuiz", "QuizSession", "ContentComment",
-"ContentVersion", "ContentAnalytics", "GeminiFileCache",
+"ContentVersion", "ContentAnalytics", "GeminiFileCache", "UserFreeApiUsage",
 "Community", "CommunityMember", "CommunitySubjectLink", "CommunitySubjectFile",
 "Notification", "ContentRating", "UserPreference",
 "UserRoleEnum", "DifficultyLevelEnum", "AiProviderEnum", "ContentTypeEnum",

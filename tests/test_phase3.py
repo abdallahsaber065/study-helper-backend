@@ -17,34 +17,46 @@ print(f"Working directory: {os.getcwd()}")
 from fastapi.testclient import TestClient
 from fastapi import UploadFile
 from app import app
+import random
+import string
 
 # Create test client
 client = TestClient(app)
 
 # Test data
 TEST_USER1 = {
-    "username": "fileuser_test2",
+    "username": f"fileuser_{random.randint(1000, 9999)}",
     "first_name": "File",
     "last_name": "User",
-    "email": "file_test2@example.com",
-    "password": "filepassword123"
+    "email": f"file_test{random.randint(1000, 9999)}@example.com",
+    "password": f"filepassword{random.randint(1000, 9999)}"
 }
 
 TEST_USER2 = {
-    "username": "shareuser_test11",
+    "username": f"shareuser_{random.randint(1000, 9999)}",
     "first_name": "Share",
     "last_name": "User",
-    "email": "share_test11@example.com",
-    "password": "sharepassword123"
+    "email": f"share_test{random.randint(1000, 9999)}@example.com",
+    "password": f"sharepassword{random.randint(1000, 9999)}"
 }
 
 # Create sample test file
 def create_test_file(filename, content="This is a test file content for summary generation."):
-    test_dir = Path("test_files")
+    test_dir = Path("cache/test_files")
     test_dir.mkdir(exist_ok=True)
+    
+    # Generate random filename to avoid conflicts
+    if not filename.startswith("random_"):
+        random_str = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
+        filename = f"random_{random_str}_{filename}"
+    
+    # Add randomness to content to ensure unique hash
+    random_content = f"UNIQUE CONTENT ID: {random.randint(100000, 999999)}\n{content}"
+    
     file_path = test_dir / filename
     with open(file_path, "w") as f:
-        f.write(content)
+        f.write(random_content)
+    
     return file_path
 
 
@@ -179,12 +191,15 @@ This test demonstrates the functionality of the AI-powered summary generation sy
     if response.status_code == 200:
         access_list = response.json()
         print(f"   ✅ Successfully retrieved file access list")
+        print(f"   Full access list: {access_list}")  # Debug - print full access list
         for entry in access_list:
+            print(f"   - User ID: {entry['user_id']}, Access Level: {entry['access_level']}")
             if entry['user_id'] == user1_id and entry['access_level'] == "admin":
                 print(f"   ✅ Confirmed user1 has admin access to the file")
                 break
         else:
             print(f"   ❌ User1 doesn't have admin access to their uploaded file")
+            print(f"   Current user1_id: {user1_id}")  # Debug - print user1_id
             return
     else:
         print(f"   ❌ Failed to retrieve access list: {response.json()}")
@@ -313,7 +328,7 @@ This document provides additional information for testing multiple file summary 
     os.remove(test_file_path)
     os.remove(second_test_file_path)
     try:
-        os.rmdir("test_files")
+        os.rmdir("cache/test_files")
     except:
         pass  # Directory might not be empty
     

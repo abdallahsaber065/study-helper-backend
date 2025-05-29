@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from fastapi import HTTPException, status
-from models.models import AiApiKey, GeminiFileCache, AiProviderEnum, PhysicalFile
+from models.models import AiApiKey, GeminiFileCache, AiProviderEnum, PhysicalFile, UserFileAccess
 from schemas.ai_cache import GeminiFileCacheCreate
 from core.config import settings
 from core.security import verify_password, get_password_hash
@@ -263,11 +263,9 @@ class AIManager(Generic[T]):
                     )
                 
                 # Check if user has access to the file
-                user_file_access = self.db.query(PhysicalFile).join(
-                    "access_entries"
-                ).filter(
-                    PhysicalFile.id == file_id,
-                    PhysicalFile.access_entries.any(user_id=user_id)
+                user_file_access = self.db.query(UserFileAccess).filter(
+                    UserFileAccess.physical_file_id == file_id,
+                    UserFileAccess.user_id == user_id
                 ).first()
                 
                 # If not explicitly granted access, check if user is the uploader

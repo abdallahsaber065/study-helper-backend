@@ -18,8 +18,11 @@ google
 cryptography
 email-validator
 requests
-
+PyPDF2
+python-docx
+openai
+pillow
+aiofiles
 structlog
 python-json-logger
 psutil
-structlog

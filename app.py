@@ -1,8 +1,12 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+import os
 
 # Import routers
-from routers import auth, users
+from routers import auth, users, files, summaries
+
+# Create upload directory if it doesn't exist
+os.makedirs("uploads", exist_ok=True)
 
 # Create FastAPI app instance
 app = FastAPI(
@@ -25,6 +29,8 @@ app.add_middleware(
 # Include routers
 app.include_router(auth.router)
 app.include_router(users.router)
+app.include_router(files.router)
+app.include_router(summaries.router)
 
 
 # Health check endpoint

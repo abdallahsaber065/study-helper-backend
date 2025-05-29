@@ -110,7 +110,7 @@ class UserSession(Base):
     session_token = Column(String(255), nullable=False, unique=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now()) # DB trigger handles updates
-    expires_at = Column(DateTime(timezone=True), server_default=func.text("now() + interval '2 days'"))
+    expires_at = Column(DateTime(timezone=True), nullable=True)
 
     user = relationship("User", back_populates="sessions")
 
@@ -160,6 +160,20 @@ class PhysicalFile(Base):
     summaries_generated = relationship("Summary", back_populates="physical_file", cascade="all, delete-orphan")
     cache_entries = relationship("GeminiFileCache", back_populates="physical_file", cascade="all, delete-orphan")
     community_subject_files = relationship("CommunitySubjectFile", back_populates="physical_file", cascade="all, delete-orphan")
+
+class UserFileAccess(Base):
+    __tablename__ = "user_file_access"
+    __table_args__ = (PrimaryKeyConstraint("user_id", "physical_file_id"),)
+
+    user_id = Column(Integer, ForeignKey("user.id"), primary_key=True)
+    physical_file_id = Column(Integer, ForeignKey("physical_file.id"), primary_key=True)
+    access_level = Column(String(20), nullable=False, server_default='read')  # read, write, admin
+    granted_at = Column(DateTime(timezone=True), server_default=func.now())
+    granted_by_user_id = Column(Integer, ForeignKey("user.id"), nullable=True)
+
+    user = relationship("User", back_populates="file_access_entries")
+    physical_file = relationship("PhysicalFile", back_populates="access_entries")
+    granted_by = relationship("User", foreign_keys=[granted_by_user_id])
 
 # Summary Model
 class Summary(Base):
@@ -258,6 +272,22 @@ class McqQuiz(Base):
     sessions = relationship("QuizSession", back_populates="quiz", cascade="all, delete-orphan")
     community = relationship("Community", back_populates="quizzes")
 
+class QuizSession(Base):
+    __tablename__ = "quiz_session"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("user.id"), nullable=False)
+    quiz_id = Column(Integer, ForeignKey("mcq_quiz.id"), nullable=False)
+    started_at = Column(DateTime(timezone=True), server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    score = Column(Integer, nullable=True)
+    total_questions = Column(Integer, nullable=False)
+    answers_json = Column(JSONB, nullable=True)  # Store user answers as JSON
+    time_taken_seconds = Column(Integer, nullable=True)
+
+    user = relationship("User", back_populates="quiz_sessions")
+    quiz = relationship("McqQuiz", back_populates="sessions")
+
 # Content Interaction & Meta Models
 class ContentComment(Base):
     __tablename__ = "content_comment"
@@ -320,8 +350,6 @@ class GeminiFileCache(Base):
     gemini_response = Column(JSONB, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now()) # DB trigger handles updates
-
-    physical_file = relationship("PhysicalFile", back_populates="cache_entries")
 
 # --- Community Feature Models ---
 
@@ -453,16 +481,15 @@ class UserPreference(Base):
     user = relationship("User", back_populates="preferences")
 
 
-# Ensure all models are imported if __all__ is used, or accessible via from .models import *
-# For example:
-# __all__ = [
-# "User", "UserSession", "AiApiKey", "Subject", "PhysicalFile", "UserFileAccess",
-# "Summary", "McqQuestionTagLink", "McqQuestion", "QuestionTag",
-# "McqQuizQuestionLink", "McqQuiz", "QuizSession", "ContentComment",
-# "ContentVersion", "ContentAnalytics", "GeminiFileCache",
-# "Community", "CommunityMember", "CommunitySubjectLink", "CommunitySubjectFile",
-# "Notification", "ContentRating", "UserPreference",
-# "UserRoleEnum", "DifficultyLevelEnum", "AiProviderEnum", "ContentTypeEnum",
-# "CommunityRoleEnum", "CommunityFileCategoryEnum", "NotificationTypeEnum", "RatingValueEnum"
-# ]
+
+__all__ = [
+"User", "UserSession", "AiApiKey", "Subject", "PhysicalFile", "UserFileAccess",
+"Summary", "McqQuestionTagLink", "McqQuestion", "QuestionTag",
+"McqQuizQuestionLink", "McqQuiz", "QuizSession", "ContentComment",
+"ContentVersion", "ContentAnalytics", "GeminiFileCache",
+"Community", "CommunityMember", "CommunitySubjectLink", "CommunitySubjectFile",
+"Notification", "ContentRating", "UserPreference",
+"UserRoleEnum", "DifficultyLevelEnum", "AiProviderEnum", "ContentTypeEnum",
+"CommunityRoleEnum", "CommunityFileCategoryEnum", "NotificationTypeEnum", "RatingValueEnum"
+]
 

@@ -25,10 +25,14 @@ class Settings(BaseSettings):
     gemini_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
     
+    # Free tier limits
+    free_tier_gemini_limit: int = 10  # Max number of free Gemini API calls per user
+    free_tier_openai_limit: int = 5   # Max number of free OpenAI API calls per user
+    
     # File upload settings
     max_file_size_mb: int = 50
     allowed_file_types: list[str] = [".pdf", ".txt", ".docx", ".doc"]
-    upload_directory: str = "file_uploads"
+    upload_directory: str = "cache/file_uploads"
     
     # Application settings
     app_name: str = "Study Helper Backend API"

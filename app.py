@@ -5,9 +5,6 @@ import os
 # Import routers
 from routers import auth, users, files, summaries
 
-# Create upload directory if it doesn't exist
-os.makedirs("uploads", exist_ok=True)
-
 # Create FastAPI app instance
 app = FastAPI(
     title="Study Helper Backend API",

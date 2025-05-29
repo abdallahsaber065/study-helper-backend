@@ -34,6 +34,17 @@ class Settings(BaseSettings):
     allowed_file_types: list[str] = [".pdf", ".txt", ".docx", ".doc"]
     upload_directory: str = "cache/file_uploads"
     
+    # Default user settings
+    default_admin_username: Optional[str] = None
+    default_admin_email: Optional[str] = None
+    default_admin_password: Optional[str] = None
+    force_reset_password_admin: bool = False
+    
+    default_free_user_username: Optional[str] = None
+    default_free_user_email: Optional[str] = None
+    default_free_user_password: Optional[str] = None
+    force_reset_password_free: bool = False
+    
     # Application settings
     app_name: str = "Study Helper Backend API"
     app_version: str = "0.1.0"

@@ -1,7 +1,7 @@
 """
 Authentication routes for user registration, login, and user management.
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPBearer
 from sqlalchemy.orm import Session
@@ -128,19 +128,19 @@ async def login_user(login_data: LoginRequest, db: Session = Depends(get_db)):
     )
     
     # Update last login
-    user.last_login = datetime.utcnow()
+    user.last_login = datetime.now(timezone.utc)
     
     # Create or update user session
     session = db.query(UserSession).filter(UserSession.user_id == user.id).first()
     if session:
         session.session_token = access_token
-        session.updated_at = datetime.utcnow()
-        session.expires_at = datetime.utcnow() + access_token_expires
+        session.updated_at = datetime.now(timezone.utc)
+        session.expires_at = datetime.now(timezone.utc) + access_token_expires
     else:
         session = UserSession(
             user_id=user.id,
             session_token=access_token,
-            expires_at=datetime.utcnow() + access_token_expires
+            expires_at=datetime.now(timezone.utc) + access_token_expires
         )
         db.add(session)
     
@@ -217,7 +217,7 @@ async def update_current_user(
     for field, value in update_data.items():
         setattr(current_user, field, value)
     
-    current_user.updated_at = datetime.utcnow()
+    current_user.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(current_user)
     
@@ -239,8 +239,8 @@ async def refresh_token(current_user: User = Depends(get_current_user), db: Sess
     session = db.query(UserSession).filter(UserSession.user_id == current_user.id).first()
     if session:
         session.session_token = access_token
-        session.updated_at = datetime.utcnow()
-        session.expires_at = datetime.utcnow() + access_token_expires
+        session.updated_at = datetime.now(timezone.utc)
+        session.expires_at = datetime.now(timezone.utc) + access_token_expires
         db.commit()
     
     return Token(

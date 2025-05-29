@@ -79,9 +79,7 @@ class User(Base):
     profile_picture_url = Column(String(255), nullable=True)
     is_active = Column(Boolean, nullable=False, server_default='true')
     is_verified = Column(Boolean, nullable=False, server_default='false')
-    role = Column(SAEnum(UserRoleEnum, name="user_role_enum", create_type=False), nullable=False, server_default=UserRoleEnum.user.value)
-
-    # Relationships
+    role = Column(SAEnum(UserRoleEnum, name="user_role_enum", create_type=False), nullable=False, server_default=UserRoleEnum.user.value)    # Relationships
     sessions = relationship("UserSession", back_populates="user", cascade="all, delete-orphan")
     api_keys = relationship("AiApiKey", back_populates="user", cascade="all, delete-orphan")
     created_questions = relationship("McqQuestion", back_populates="creator")
@@ -89,7 +87,8 @@ class User(Base):
     quiz_sessions = relationship("QuizSession", back_populates="user", cascade="all, delete-orphan")
     summaries = relationship("Summary", back_populates="user", cascade="all, delete-orphan")
     uploaded_files = relationship("PhysicalFile", back_populates="uploader")
-    file_access_entries = relationship("UserFileAccess", back_populates="user", cascade="all, delete-orphan")
+    file_access_entries = relationship("UserFileAccess", foreign_keys="[UserFileAccess.user_id]", back_populates="user", cascade="all, delete-orphan")
+    granted_file_accesses = relationship("UserFileAccess", foreign_keys="[UserFileAccess.granted_by_user_id]", back_populates="granted_by")
     comments_authored = relationship("ContentComment", back_populates="author", cascade="all, delete-orphan")
     versions_created = relationship("ContentVersion", back_populates="user_creator", cascade="all, delete-orphan")
     # Relationships to new tables
@@ -169,11 +168,10 @@ class UserFileAccess(Base):
     physical_file_id = Column(Integer, ForeignKey("physical_file.id"), primary_key=True)
     access_level = Column(String(20), nullable=False, server_default='read')  # read, write, admin
     granted_at = Column(DateTime(timezone=True), server_default=func.now())
-    granted_by_user_id = Column(Integer, ForeignKey("user.id"), nullable=True)
-
-    user = relationship("User", back_populates="file_access_entries")
+    granted_by_user_id = Column(Integer, ForeignKey("user.id"), nullable=True)    
+    user = relationship("User", foreign_keys=[user_id], back_populates="file_access_entries")
     physical_file = relationship("PhysicalFile", back_populates="access_entries")
-    granted_by = relationship("User", foreign_keys=[granted_by_user_id])
+    granted_by = relationship("User", foreign_keys=[granted_by_user_id], back_populates="granted_file_accesses")
 
 # Summary Model
 class Summary(Base):
@@ -350,6 +348,8 @@ class GeminiFileCache(Base):
     gemini_response = Column(JSONB, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now()) # DB trigger handles updates
+
+    physical_file = relationship("PhysicalFile", back_populates="cache_entries")
 
 # --- Community Feature Models ---
 

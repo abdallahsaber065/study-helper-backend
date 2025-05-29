@@ -73,3 +73,6 @@ summaries
 # Local configuration files
 .cursorignore
 .github/instructions
+.cursor
+
+file_uploads/*

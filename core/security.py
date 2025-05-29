@@ -11,6 +11,8 @@ from sqlalchemy.orm import Session
 from core.config import settings
 from db_config import get_db
 from models.models import User, UserRoleEnum
+from cryptography.fernet import Fernet
+import base64
 
 
 # Password hashing context
@@ -169,3 +171,60 @@ async def get_current_admin_user(current_user: User = Depends(get_current_active
             detail="The user doesn't have admin privileges"
         )
     return current_user
+
+
+# API Key Encryption/Decryption Functions
+def _get_encryption_key() -> bytes:
+    """Get or generate encryption key for API keys."""
+    # Use JWT secret as base for encryption key
+    key_material = settings.jwt_secret_key.encode()
+    # Ensure the key is 32 bytes for Fernet
+    if len(key_material) < 32:
+        key_material = key_material.ljust(32, b'0')
+    else:
+        key_material = key_material[:32]
+    
+    # Encode as base64 for Fernet
+    return base64.urlsafe_b64encode(key_material)
+
+
+def encrypt_api_key(plain_api_key: str) -> str:
+    """
+    Encrypt an API key for secure storage.
+    
+    Args:
+        plain_api_key: The plain text API key
+        
+    Returns:
+        str: The encrypted API key (base64 encoded)
+    """
+    if not plain_api_key:
+        return ""
+    
+    f = Fernet(_get_encryption_key())
+    encrypted_bytes = f.encrypt(plain_api_key.encode())
+    return base64.urlsafe_b64encode(encrypted_bytes).decode()
+
+
+def decrypt_api_key(encrypted_api_key: str) -> str:
+    """
+    Decrypt an API key for use.
+    
+    Args:
+        encrypted_api_key: The encrypted API key (base64 encoded)
+        
+    Returns:
+        str: The decrypted API key
+    """
+    if not encrypted_api_key:
+        return ""
+    
+    try:
+        f = Fernet(_get_encryption_key())
+        encrypted_bytes = base64.urlsafe_b64decode(encrypted_api_key.encode())
+        decrypted_bytes = f.decrypt(encrypted_bytes)
+        return decrypted_bytes.decode()
+    except Exception as e:
+        # If decryption fails, it might be a plain text key (for backward compatibility)
+        # In production, you might want to handle this differently
+        return encrypted_api_key

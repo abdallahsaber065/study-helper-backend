@@ -296,14 +296,14 @@ async def delete_question(
 # ============ AI MCQ Generation ============
 
 @router.post("/generate")
-async def generate_mcqs_from_files(
+async def generate_mcqs(
     request: MCQGenerationRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Generate MCQs from files using AI."""
     mcq_service = MCQGeneratorService(db)
-    result = await mcq_service.generate_mcqs_from_files(request, current_user)
+    result = await mcq_service.generate_mcqs(request, current_user)
     return result
 
 

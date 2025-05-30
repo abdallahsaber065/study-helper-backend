@@ -50,9 +50,9 @@ class SummaryGeneratorService:
         """
 
         with open(
-            "prompts/summary/section_instruction.md", "r", encoding="utf-8"
+            "prompts/summary/system_instruction.md", "r", encoding="utf-8"
         ) as file:
-            section_instruction = file.read()
+            system_instruction = file.read()
 
         # Construct the prompt
         base_prompt = "Create a comprehensive summary of the provided content. Include: 1) A concise title, 2) A detailed summary in markdown format with headings and bullet points, 3) Key points or takeaways. Ensure the summary is well-structured, clear, and captures the main concepts."
@@ -65,7 +65,7 @@ class SummaryGeneratorService:
             prompt=prompt,
             physical_file_ids=physical_file_ids,
             response_schema=SummaryResponse,
-            system_instruction=section_instruction,
+            system_instruction=system_instruction,
         )
 
         # Check if we got a structured response

@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     allowed_file_types: list[str] = [".pdf", ".txt", ".docx", ".doc"]
     upload_directory: str = "cache/file_uploads"
     
+    # Community settings
+    max_communities_per_user: int = 3
+    max_community_memberships_per_user: int = 10
+    community_code_length: int = 8
+    
     # Default user settings
     default_admin_username: Optional[str] = None
     default_admin_email: Optional[str] = None
@@ -62,3 +67,9 @@ class Settings(BaseSettings):
 
 # Global settings instance
 settings = Settings()
+
+
+# Gemini settings
+GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_MAX_TOKENS = 2048
+GEMINI_TEMPERATURE = 0.3

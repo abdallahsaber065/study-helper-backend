@@ -3,6 +3,7 @@ Database cleanup script for clearing records after experiments.
 """
 
 import os
+import shutil
 import sys
 from pathlib import Path
 import argparse
@@ -39,7 +40,7 @@ def clear_all_tables(db: Session, confirm: bool = False):
     tables_to_clear = [
         # Link/Junction tables and dependent records (clear first)
         "user_free_api_usage",
-        "gemini_file_cache", 
+        "gemini_file_cache",
         "user_file_access",
         "mcq_question_tag_link",
         "mcq_quiz_question_link",
@@ -49,7 +50,7 @@ def clear_all_tables(db: Session, confirm: bool = False):
         
         # Content interaction tables
         "content_rating",
-        "content_comment", 
+        "content_comment",
         "content_version",
         "content_analytics",
         "notification",
@@ -107,7 +108,7 @@ def clear_all_tables(db: Session, confirm: bool = False):
             "gemini_file_cache_id_seq",
             "summary_id_seq",
             "mcq_question_id_seq",
-            "question_tag_id_seq", 
+            "question_tag_id_seq",
             "mcq_quiz_id_seq",
             "quiz_session_id_seq",
             "content_comment_id_seq",
@@ -155,7 +156,7 @@ def clear_user_data_only(db: Session, confirm: bool = False):
         # User data and sessions
         "user_free_api_usage",
         "gemini_file_cache",
-        "user_file_access", 
+        "user_file_access",
         "user_session",
         "ai_api_key",
         "user_preference",
@@ -163,7 +164,7 @@ def clear_user_data_only(db: Session, confirm: bool = False):
         # User-generated content
         "content_rating",
         "content_comment",
-        "content_version", 
+        "content_version",
         "content_analytics",
         "notification",
         
@@ -344,9 +345,56 @@ def clear_cache_files():
                 )
         else:
             print(f"   ℹ️  Cache directory not found or not a directory: {cache_path}")
+            
+    # Clear all __pycache__ directories
+    pycache_dirs = [
+        "cache/__pycache__",
+        "logs/__pycache__",
+        "models/__pycache__",
+        "scripts/__pycache__",
+        "tests/__pycache__",
+        "routers/__pycache__",
+        "core/__pycache__",
+    ]
+    
+    for pycache_dir in pycache_dirs:
+        pycache_path = project_root / pycache_dir
+        if pycache_path.exists() and pycache_path.is_dir():
+            try:
+                for file_path in pycache_path.iterdir():
+                    if file_path.is_file():
+                        try:
+                            file_path.unlink()
+                            print(f"   ✅ Deleted {file_path.name}")
+                        except Exception as e:
+                            print(f"   ⚠️  Error deleting {file_path.name}: {str(e)}")
+                    elif file_path.is_dir():
+                        try:
+                            shutil.rmtree(file_path)
+                            print(f"   ✅ Deleted {file_path.name}")
+                        except Exception as e:
+                            print(f"   ⚠️  Error deleting {file_path.name}: {str(e)}")
+                    else:
+                        print(f"   ℹ️  {file_path.name} is not a file or directory")
+            except Exception as e:
+                print(f"   ⚠️  Error deleting {pycache_dir}: {str(e)}")
 
     print(f"   🗂️  Deleted {total_deleted} cache files in total")
 
+def clear_all_logs():
+    """Clear all logs from the logs directory."""
+    print("🗑️  Clearing all logs...")
+    logs_dir = Path("logs")
+    if logs_dir.exists() and logs_dir.is_dir():
+        for file in logs_dir.iterdir():
+            if file.is_file():
+                try:
+                    file.unlink()
+                    print(f"   ✅ Deleted {file.name}")
+                except Exception as e:
+                    print(f"   ⚠️  Error deleting {file.name}: {str(e)}")
+    else:
+        print(f"   ℹ️  Logs directory not found or not a directory: {logs_dir}")
 
 def main():
     parser = argparse.ArgumentParser(description="Database and cache cleanup utility")
@@ -367,6 +415,11 @@ def main():
         "--cache",
         action="store_true",
         help="Clear cache files from configured directories",
+    )
+    parser.add_argument(
+        "--logs",
+        action="store_true",
+        help="Clear all logs from the logs directory",
     )
     parser.add_argument(
         "--yes",
@@ -422,6 +475,9 @@ def main():
                 )
             else:
                 clear_test_users(db_session, args.yes)
+
+        if args.logs:
+            clear_all_logs()
 
         print("\n🎉 Cleanup completed!")
 

@@ -24,10 +24,10 @@ from schemas.ai_cache import GeminiFileCacheCreate
 from core.config import settings
 from core.security import verify_password, get_password_hash, decrypt_api_key
 from core.exceptions import AIServiceException
-import structlog
+from core.logging import get_logger
 
 T = TypeVar("T", bound=BaseModel)
-logger = structlog.get_logger("ai_manager")
+logger = get_logger("ai_manager")
 
 
 class AIRetryConfig:

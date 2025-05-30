@@ -6,6 +6,14 @@ from fastapi import FastAPI, Depends
 import json
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
+
+# Import logging system first
+from core.logging import setup_logging, get_logger, database_logger
+
+# Setup logging early
+setup_logging()
+logger = get_logger("main")
+
 from db_config import get_db
 from models.models import Base, User, AiApiKey, AiProviderEnum
 from app import app
@@ -17,6 +25,7 @@ os.makedirs("cache", exist_ok=True)
 @app.on_event("startup")
 async def startup_db_client():
     """Initialize database and default users on startup."""
+    logger.info("Starting database initialization")
     
     try:
         db = next(get_db())
@@ -40,6 +49,7 @@ async def startup_db_client():
             admin_user = db.query(User).filter(User.username == admin_username).first()
             
             if not admin_user:
+                logger.info("Creating default admin user", username=admin_username)
                 admin_user = User(
                     username=admin_username,
                     email=admin_email,
@@ -53,14 +63,18 @@ async def startup_db_client():
                 db.add(admin_user)
                 db.commit()
                 db.refresh(admin_user)
+                logger.info("Default admin user created successfully", user_id=admin_user.id)
             elif force_reset_admin:
+                logger.info("Resetting admin user password", username=admin_username)
                 admin_user.password_hash = get_password_hash(admin_password)
                 db.commit()
+                logger.info("Admin user password reset successfully")
         
         if free_username and free_email and free_password:
             free_user = db.query(User).filter(User.username == free_username).first()
             
             if not free_user:
+                logger.info("Creating default free user", username=free_username)
                 free_user = User(
                     username=free_username,
                     email=free_email,
@@ -74,9 +88,12 @@ async def startup_db_client():
                 db.add(free_user)
                 db.commit()
                 db.refresh(free_user)
+                logger.info("Default free user created successfully", user_id=free_user.id)
             elif force_reset_free:
+                logger.info("Resetting free user password", username=free_username)
                 free_user.password_hash = get_password_hash(free_password)
                 db.commit()
+                logger.info("Free user password reset successfully")
             
             # Add Gemini API key to free user if provided
             if gemini_api_key and free_user:
@@ -87,6 +104,7 @@ async def startup_db_client():
                 ).first()
                 
                 if not existing_key:
+                    logger.info("Adding Gemini API key to free user", user_id=free_user.id)
                     api_key = AiApiKey(
                         user_id=free_user.id,
                         provider_name=AiProviderEnum.Google,
@@ -95,22 +113,29 @@ async def startup_db_client():
                     )
                     db.add(api_key)
                     db.commit()
+                    logger.info("Gemini API key added successfully")
+                else:
+                    logger.info("Gemini API key already exists for free user")
                 
+        logger.info("Database initialization completed successfully")
                 
     except Exception as e:
-        print(f"Error initializing database: {e}")
+        logger.error("Error initializing database", error=str(e), exc_info=True)
+        database_logger.error("Database initialization failed", error=str(e), exc_info=True)
 
 # Run the application
 if __name__ == "__main__":
     # Export OpenAPI schema to a JSON file
     try:
+        logger.info("Exporting OpenAPI schema")
         openapi_schema = app.openapi()
         output_path = "cache/openapi.json"
         with open(output_path, "w") as f:
             json.dump(openapi_schema, f, indent=2)
-        print(f"OpenAPI schema successfully exported to {output_path}")
+        logger.info("OpenAPI schema successfully exported", output_path=output_path)
     except Exception as e:
-        print(f"Error exporting OpenAPI schema: {e}")
+        logger.error("Error exporting OpenAPI schema", error=str(e), exc_info=True)
 
     import uvicorn
+    logger.info("Starting uvicorn server", host="0.0.0.0", port=8000)
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)

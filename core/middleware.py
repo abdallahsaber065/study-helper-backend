@@ -6,12 +6,10 @@ import uuid
 from typing import Callable
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-import structlog
-import logging
+from core.logging import get_logger, access_logger
 
-# Use both structured and standard logging for compatibility
-logger = structlog.get_logger("middleware")
-std_logger = logging.getLogger("middleware")
+# Use centralized logging system
+logger = get_logger("middleware")
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -42,6 +40,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # HSTS (only add in production with HTTPS)
         # response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         
+        logger.debug("Security headers added", path=str(request.url.path))
         return response
 
 
@@ -62,7 +61,8 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         if forwarded_for:
             client_host = forwarded_for.split(",")[0].strip()
         
-        logger.info(
+        # Use access logger for HTTP access logs
+        access_logger.info(
             "Request started",
             request_id=request_id,
             method=request.method,
@@ -80,11 +80,14 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             process_time = time.time() - start_time
             
             # Log response
-            logger.info(
+            access_logger.info(
                 "Request completed",
                 request_id=request_id,
+                method=request.method,
+                path=str(request.url.path),
                 status_code=response.status_code,
-                process_time_ms=round(process_time * 1000, 2)
+                process_time_ms=round(process_time * 1000, 2),
+                client_host=client_host
             )
             
             # Add request ID to response headers
@@ -95,11 +98,15 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             
         except Exception as e:
             process_time = time.time() - start_time
-            logger.error(
+            access_logger.error(
                 "Request failed",
                 request_id=request_id,
+                method=request.method,
+                path=str(request.url.path),
                 exception=str(e),
-                process_time_ms=round(process_time * 1000, 2)
+                process_time_ms=round(process_time * 1000, 2),
+                client_host=client_host,
+                exc_info=True
             )
             raise
 
@@ -121,7 +128,8 @@ class RequestSizeMiddleware(BaseHTTPMiddleware):
                     "Request body too large",
                     content_length=content_length,
                     max_size=self.max_size,
-                    client_host=request.client.host if request.client else "unknown"
+                    client_host=request.client.host if request.client else "unknown",
+                    path=str(request.url.path)
                 )
                 from fastapi import HTTPException, status
                 raise HTTPException(
@@ -153,9 +161,10 @@ class IPWhitelistMiddleware(BaseHTTPMiddleware):
         # Check whitelist
         if client_ip not in self.whitelist:
             logger.warning(
-                "IP not in whitelist",
+                "IP not in whitelist - access denied",
                 client_ip=client_ip,
-                path=str(request.url.path)
+                path=str(request.url.path),
+                method=request.method
             )
             from fastapi import HTTPException, status
             raise HTTPException(
@@ -163,6 +172,7 @@ class IPWhitelistMiddleware(BaseHTTPMiddleware):
                 detail="Access denied"
             )
         
+        logger.debug("IP whitelist check passed", client_ip=client_ip)
         return await call_next(request)
 
 
@@ -189,7 +199,8 @@ class RequestTimeoutMiddleware(BaseHTTPMiddleware):
                 "Request timeout",
                 timeout_seconds=self.timeout_seconds,
                 path=str(request.url.path),
-                method=request.method
+                method=request.method,
+                client_host=request.client.host if request.client else "unknown"
             )
             from fastapi import HTTPException, status
             raise HTTPException(

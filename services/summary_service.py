@@ -7,8 +7,9 @@ from sqlalchemy.orm import Session
 from fastapi import HTTPException, status
 from pydantic import BaseModel, Field
 
-from models.models import User, Summary
+from models.models import User, Summary, ContentTypeEnum
 from services.ai_manager import AIManager
+from services.notification_service import NotificationService
 
 
 class SummaryResponse(BaseModel):
@@ -94,5 +95,16 @@ class SummaryGeneratorService:
         self.db.add(new_summary)
         self.db.commit()
         self.db.refresh(new_summary)
+
+        # Send notifications for community content
+        if community_id:
+            notification_service = NotificationService(self.db)
+            notification_service.notify_new_community_content(
+                content_type=ContentTypeEnum.summary,
+                content_id=new_summary.id,
+                community_id=community_id,
+                actor_id=user.id,
+                content_title=summary_data.title
+            )
 
         return new_summary

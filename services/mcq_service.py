@@ -164,7 +164,7 @@ class MCQGeneratorService:
                     difficulty_level=mcq_set.difficulty_level,
                     user_id=user.id,
                     is_active=True,
-                    is_public=False,
+                    is_public=request.community_id is None,
                     community_id=request.community_id
                 )
                 self.db.add(quiz)
@@ -181,6 +181,20 @@ class MCQGeneratorService:
                     self.db.add(quiz_link)
 
                 self.db.commit()
+
+                # Send notifications for community content
+                if request.community_id:
+                    from services.notification_service import NotificationService
+                    from models.models import ContentTypeEnum
+                    
+                    notification_service = NotificationService(self.db)
+                    notification_service.notify_new_community_content(
+                        content_type=ContentTypeEnum.quiz,
+                        content_id=quiz.id,
+                        community_id=request.community_id,
+                        actor_id=user.id,
+                        content_title=quiz.title
+                    )
 
                 result["quiz"] = {
                     "id": quiz.id,

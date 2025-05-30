@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import os
 
 # Import routers
-from routers import auth, users, files, summaries, mcqs
+from routers import auth, users, files, summaries, mcqs, communities
 
 # Create FastAPI app instance
 app = FastAPI(
@@ -29,6 +29,7 @@ app.include_router(users.router)
 app.include_router(files.router)
 app.include_router(summaries.router)
 app.include_router(mcqs.router)
+app.include_router(communities.router)
 
 
 # Health check endpoint

@@ -10,6 +10,13 @@ from .mcq import (
     QuizSessionCreate, QuizSessionRead, QuizSessionSubmit,
     MCQGenerationRequest, MCQGenerationResponse
 )
+from .community import (
+    CommunityCreate, CommunityRead, CommunityUpdate, CommunityJoinRequest,
+    CommunityWithDetails, CommunityMemberRead, CommunityMemberUpdate,
+    CommunitySubjectLinkCreate, CommunitySubjectLinkRead,
+    CommunitySubjectFileCreate, CommunitySubjectFileRead, CommunitySubjectFileUpdate,
+    CommunityStats
+)
 
 __all__ = [
     "UserCreate", "UserRead", "UserUpdate", "UserSession",
@@ -20,5 +27,10 @@ __all__ = [
     "McqQuestionCreate", "McqQuestionRead", "McqQuestionUpdate",
     "McqQuizCreate", "McqQuizRead", "McqQuizUpdate", "McqQuizWithQuestions",
     "QuizSessionCreate", "QuizSessionRead", "QuizSessionSubmit",
-    "MCQGenerationRequest", "MCQGenerationResponse"
+    "MCQGenerationRequest", "MCQGenerationResponse",
+    "CommunityCreate", "CommunityRead", "CommunityUpdate", "CommunityJoinRequest",
+    "CommunityWithDetails", "CommunityMemberRead", "CommunityMemberUpdate",
+    "CommunitySubjectLinkCreate", "CommunitySubjectLinkRead",
+    "CommunitySubjectFileCreate", "CommunitySubjectFileRead", "CommunitySubjectFileUpdate",
+    "CommunityStats"
 ]

@@ -513,6 +513,116 @@ Data structures are ways of organizing and storing data so that they can be acce
     else:
         print(f"   ❌ Failed to create private community: {response.json()}")
 
+    # Test community-specific content (summaries and quizzes)
+    print("\n26. Testing community-specific content association...")
+    
+    # Test creating a community summary (admin only)
+    print("\n26a. Testing community summary creation...")
+    summary_request = {
+        "physical_file_ids": [file_id] if file_id else [],
+        "custom_instructions": "Create a summary specifically for our study community focusing on key concepts for group discussions."
+    }
+    
+    response = client.post(
+        f"/summaries/generate?community_id={community_id}", 
+        json=summary_request, 
+        headers=admin_headers
+    )
+    
+    community_summary_id = None
+    if response.status_code == 200:
+        summary_result = response.json()
+        community_summary_id = summary_result["summary"]["id"]
+        print(f"   ✅ Community summary created successfully: {summary_result['summary']['title']}")
+    else:
+        print(f"   ❌ Failed to create community summary: {response.json()}")
+    
+    # Test member trying to create community summary (should fail)
+    response = client.post(
+        f"/summaries/generate?community_id={community_id}", 
+        json=summary_request, 
+        headers=member2_headers
+    )
+    
+    if response.status_code == 403:
+        print(f"   ✅ Member correctly denied access to create community summary")
+    else:
+        print(f"   ❌ Member should not be able to create community summary: {response.status_code}")
+    
+    # Get community summaries
+    print("\n26b. Getting community summaries...")
+    response = client.get(f"/communities/{community_id}/summaries", headers=admin_headers)
+    if response.status_code == 200:
+        summaries = response.json()
+        print(f"   ✅ Retrieved {len(summaries)} community summaries")
+        for summary in summaries:
+            print(f"   - {summary.get('title', 'Untitled')}")
+    else:
+        print(f"   ❌ Failed to get community summaries: {response.json()}")
+    
+    # Test creating community quiz/MCQs (admin only)
+    print("\n26c. Testing community quiz creation...")
+    if file_id:
+        mcq_request = {
+            "physical_file_ids": [file_id],
+            "num_questions": 5,
+            "difficulty_level": "Medium",
+            "custom_instructions": "Create questions suitable for community study sessions.",
+            "create_quiz": True,
+            "quiz_title": "Community Study Quiz",
+            "quiz_description": "Quiz created for community study sessions",
+            "community_id": community_id
+        }
+        
+        response = client.post("/mcqs/generate", json=mcq_request, headers=admin_headers)
+        
+        community_quiz_id = None
+        if response.status_code == 200:
+            quiz_result = response.json()
+            if quiz_result.get("quiz"):
+                community_quiz_id = quiz_result["quiz"]["id"]
+                print(f"   ✅ Community quiz created successfully: {quiz_result['quiz']['title']}")
+                print(f"   Questions generated: {quiz_result.get('questions_created', 0)}")
+            else:
+                print(f"   ✅ MCQs generated for community (no quiz created)")
+        else:
+            print(f"   ❌ Failed to create community quiz: {response.json()}")
+        
+        # Test member trying to create community quiz (should fail)
+        response = client.post("/mcqs/generate", json=mcq_request, headers=member2_headers)
+        
+        if response.status_code == 403:
+            print(f"   ✅ Member correctly denied access to create community quiz")
+        else:
+            print(f"   ❌ Member should not be able to create community quiz: {response.status_code}")
+    else:
+        print(f"   ⚠️ Skipping community quiz creation: No file available")
+    
+    # Get community quizzes
+    print("\n26d. Getting community quizzes...")
+    response = client.get(f"/communities/{community_id}/quizzes", headers=admin_headers)
+    if response.status_code == 200:
+        quizzes = response.json()
+        print(f"   ✅ Retrieved {len(quizzes)} community quizzes")
+        for quiz in quizzes:
+            print(f"   - {quiz.get('title', 'Untitled')}: {quiz.get('difficulty_level', 'Unknown')} difficulty")
+    else:
+        print(f"   ❌ Failed to get community quizzes: {response.json()}")
+    
+    # Verify updated community statistics include the new content
+    print("\n26e. Verifying updated community statistics...")
+    response = client.get(f"/communities/{community_id}/stats", headers=admin_headers)
+    if response.status_code == 200:
+        final_stats = response.json()
+        print(f"   ✅ Final community statistics:")
+        print(f"   - Members: {final_stats['total_members']}")
+        print(f"   - Subjects: {final_stats['total_subjects']}")
+        print(f"   - Files: {final_stats['total_files']}")
+        print(f"   - Quizzes: {final_stats['total_quizzes']}")
+        print(f"   - Summaries: {final_stats['total_summaries']}")
+    else:
+        print(f"   ❌ Failed to get final stats: {response.json()}")
+
     # Clean up test files
     # This try-except block will catch NameError if test_file_path was not defined (e.g., due to an early return)
     # or FileNotFoundError if the file was already removed or never created.
@@ -538,6 +648,7 @@ Data structures are ways of organizing and storing data so that they can be acce
     print("- ✅ Permission checks for content curation (adding subjects/files)")
     print("- ✅ Community statistics and details retrieval")
     print("- ✅ Private community creation and join process")
+    print("- ✅ Community-specific content association (summaries and quizzes)")
     # The "Community limits and validation" is implicitly tested by various calls.
     # A more explicit print for it might be misleading without specific tests for limits.
     print("- ✅ Basic validation and error handling observed in responses")

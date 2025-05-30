@@ -24,6 +24,7 @@ from schemas.mcq import (
     MCQGenerationRequest
 )
 from services.mcq_service import MCQGeneratorService
+from services.community_service import CommunityService
 
 router = APIRouter(prefix="/mcqs", tags=["MCQs and Quizzes"])
 
@@ -302,6 +303,17 @@ async def generate_mcqs(
     db: Session = Depends(get_db)
 ):
     """Generate MCQs from files using AI."""
+    # Check community access if community_id is provided
+    if request.community_id:
+        community_service = CommunityService(db)
+        try:
+            community_service._check_admin_or_moderator(current_user, request.community_id)
+        except HTTPException:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Admin or moderator access required to create community MCQs"
+            )
+    
     mcq_service = MCQGeneratorService(db)
     result = await mcq_service.generate_mcqs(request, current_user)
     return result
@@ -316,6 +328,17 @@ async def create_quiz(
     db: Session = Depends(get_db)
 ):
     """Create a new quiz."""
+    # Check community access if community_id is provided
+    if quiz.community_id:
+        community_service = CommunityService(db)
+        try:
+            community_service._check_admin_or_moderator(current_user, quiz.community_id)
+        except HTTPException:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Admin or moderator access required to create community quizzes"
+            )
+    
     # Create the quiz
     quiz_data = quiz.dict(exclude={"question_ids"})
     db_quiz = McqQuiz(**quiz_data, user_id=current_user.id)

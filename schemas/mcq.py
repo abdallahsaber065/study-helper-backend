@@ -191,4 +191,5 @@ class MCQGenerationRequest(BaseModel):
     custom_instructions: Optional[str] = None
     create_quiz: bool = Field(default=True, description="Whether to create a quiz from generated questions")
     quiz_title: Optional[str] = None
-    quiz_description: Optional[str] = None 
+    quiz_description: Optional[str] = None
+    community_id: Optional[int] = Field(None, description="Community ID to associate quiz with") 

@@ -164,7 +164,8 @@ class MCQGeneratorService:
                     difficulty_level=mcq_set.difficulty_level,
                     user_id=user.id,
                     is_active=True,
-                    is_public=False
+                    is_public=False,
+                    community_id=request.community_id
                 )
                 self.db.add(quiz)
                 self.db.commit()

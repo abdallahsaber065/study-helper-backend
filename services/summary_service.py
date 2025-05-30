@@ -2,7 +2,7 @@
 Summary generation service for handling AI-powered summaries.
 """
 
-from typing import Optional, List
+from typing import List, Optional
 from sqlalchemy.orm import Session
 from fastapi import HTTPException, status
 from pydantic import BaseModel, Field
@@ -33,8 +33,9 @@ class SummaryGeneratorService:
     async def generate_summary(
         self,
         user: User,
-        physical_file_ids: Optional[List[int]] = None,
-        custom_instructions: Optional[str] = None,
+        physical_file_ids: List[int] = None,
+        custom_instructions: str = None,
+        community_id: Optional[int] = None,
     ) -> Summary:
         """
         Generate a summary from files, text, or both using AI.
@@ -44,6 +45,7 @@ class SummaryGeneratorService:
             physical_file_ids: Optional list of file IDs to summarize
             text_content: Optional text content to summarize
             custom_instructions: Optional custom instructions for the AI
+            community_id: Optional community ID to associate with the summary
 
         Returns:
             Summary: The generated summary
@@ -85,6 +87,9 @@ class SummaryGeneratorService:
         # If we have files, associate the first file with the summary
         if physical_file_ids and len(physical_file_ids) > 0:
             new_summary.physical_file_id = physical_file_ids[0]
+
+        if community_id:
+            new_summary.community_id = community_id
 
         self.db.add(new_summary)
         self.db.commit()

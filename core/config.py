@@ -31,7 +31,15 @@ class Settings(BaseSettings):
     
     # File upload settings
     max_file_size_mb: int = 50
-    allowed_file_types: list[str] = [".pdf", ".txt", ".docx", ".doc"]
+    allowed_file_types: list[str] = [
+        # Text formats
+        ".pdf", ".js", ".py", ".txt", ".html", ".htm", ".css", ".md", ".markdown",
+        ".csv", ".xml", ".rtf",
+        # Image formats
+        ".png", ".jpeg", ".jpg", ".webp", ".heic", ".heif",
+        # Audio formats
+        ".wav", ".mp3", ".aiff", ".aif", ".aac", ".ogg", ".flac",
+    ]
     upload_directory: str = "cache/file_uploads"
     
     # Community settings
@@ -57,9 +65,26 @@ class Settings(BaseSettings):
     
     # Logging settings
     log_level: str = "INFO"
-    log_format: str = "json"  # json or text
+    log_format: str = "text"  # json or text
     enable_request_logging: bool = True
     enable_sql_logging: bool = False
+    
+    # Log rotation settings
+    enable_file_logging: bool = True
+    log_directory: str = "logs"
+    log_file_max_size_mb: int = 10  # Max size per log file in MB
+    log_file_backup_count: int = 5  # Number of backup files to keep
+    log_rotation_when: str = "midnight"  # For time-based rotation: midnight, H, D, W0-W6
+    log_rotation_interval: int = 1  # Interval for time-based rotation
+    log_compression: bool = True  # Compress old log files
+    
+    # Separate log files for different components
+    app_log_file: str = "app.log"
+    error_log_file: str = "error.log"
+    security_log_file: str = "security.log"
+    ai_log_file: str = "ai.log"
+    database_log_file: str = "database.log"
+    access_log_file: str = "access.log"
     
     # Security settings
     enable_security_headers: bool = True

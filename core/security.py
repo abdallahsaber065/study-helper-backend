@@ -9,11 +9,14 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from core.config import settings
+from core.logging import get_logger, security_logger
 from db_config import get_db
 from models.models import User, UserRoleEnum
 from cryptography.fernet import Fernet
 import base64
 
+# Initialize logger
+logger = security_logger
 
 # Password hashing context
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -33,7 +36,13 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     Returns:
         bool: True if password matches, False otherwise
     """
-    return pwd_context.verify(plain_password, hashed_password)
+    try:
+        result = pwd_context.verify(plain_password, hashed_password)
+        logger.debug("Password verification completed", success=result)
+        return result
+    except Exception as e:
+        logger.error("Password verification error", error=str(e))
+        return False
 
 
 def get_password_hash(password: str) -> str:
@@ -46,7 +55,13 @@ def get_password_hash(password: str) -> str:
     Returns:
         str: The hashed password
     """
-    return pwd_context.hash(password)
+    try:
+        hashed = pwd_context.hash(password)
+        logger.debug("Password hash generated successfully")
+        return hashed
+    except Exception as e:
+        logger.error("Password hashing error", error=str(e))
+        raise
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
@@ -60,15 +75,23 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     Returns:
         str: The encoded JWT token
     """
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.now(timezone.utc) + expires_delta
-    else:
-        expire = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_access_token_expire_minutes)
-    
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
-    return encoded_jwt
+    try:
+        to_encode = data.copy()
+        if expires_delta:
+            expire = datetime.now(timezone.utc) + expires_delta
+        else:
+            expire = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_access_token_expire_minutes)
+        
+        to_encode.update({"exp": expire})
+        encoded_jwt = jwt.encode(to_encode, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+        
+        logger.info("Access token created", 
+                   username=data.get("sub"), 
+                   expires_at=expire.isoformat())
+        return encoded_jwt
+    except Exception as e:
+        logger.error("Token creation error", error=str(e), username=data.get("sub"))
+        raise
 
 
 def verify_token(token: str) -> Optional[dict]:
@@ -83,8 +106,13 @@ def verify_token(token: str) -> Optional[dict]:
     """
     try:
         payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
+        logger.debug("Token verified successfully", username=payload.get("sub"))
         return payload
-    except JWTError:
+    except JWTError as e:
+        logger.warning("Token verification failed", error=str(e))
+        return None
+    except Exception as e:
+        logger.error("Token verification error", error=str(e))
         return None
 
 
@@ -111,27 +139,39 @@ async def get_current_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
     
-    token = credentials.credentials
-    payload = verify_token(token)
-    
-    if payload is None:
+    try:
+        token = credentials.credentials
+        payload = verify_token(token)
+        
+        if payload is None:
+            logger.warning("Invalid token provided")
+            raise credentials_exception
+        
+        username: str = payload.get("sub")
+        if username is None:
+            logger.warning("Token missing username")
+            raise credentials_exception
+        
+        user = db.query(User).filter(User.username == username).first()
+        if user is None:
+            logger.warning("User not found", username=username)
+            raise credentials_exception
+        
+        if not user.is_active:
+            logger.warning("Inactive user attempted access", username=username, user_id=user.id)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Inactive user"
+            )
+        
+        logger.debug("User authenticated successfully", username=username, user_id=user.id)
+        return user
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Authentication error", error=str(e))
         raise credentials_exception
-    
-    username: str = payload.get("sub")
-    if username is None:
-        raise credentials_exception
-    
-    user = db.query(User).filter(User.username == username).first()
-    if user is None:
-        raise credentials_exception
-    
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Inactive user"
-        )
-    
-    return user
 
 
 async def get_current_active_user(current_user: User = Depends(get_current_user)) -> User:
@@ -148,6 +188,7 @@ async def get_current_active_user(current_user: User = Depends(get_current_user)
         HTTPException: If user is inactive
     """
     if not current_user.is_active:
+        logger.warning("Inactive user access denied", username=current_user.username, user_id=current_user.id)
         raise HTTPException(status_code=400, detail="Inactive user")
     return current_user
 
@@ -166,10 +207,18 @@ async def get_current_admin_user(current_user: User = Depends(get_current_active
         HTTPException: If the user is not an admin
     """
     if current_user.role != UserRoleEnum.admin:
+        logger.warning("Non-admin user attempted admin access", 
+                      username=current_user.username, 
+                      user_id=current_user.id, 
+                      role=current_user.role.value)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="The user doesn't have admin privileges"
         )
+    
+    logger.info("Admin user access granted", 
+               username=current_user.username, 
+               user_id=current_user.id)
     return current_user
 
 

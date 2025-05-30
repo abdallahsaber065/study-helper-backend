@@ -15,6 +15,7 @@ from core.security import (
     get_current_active_user
 )
 from core.config import settings
+from core.logging import get_logger
 from db_config import get_db
 from models.models import User, UserSession, UserRoleEnum
 from schemas.user import UserCreate, UserRead, UserUpdate
@@ -22,6 +23,9 @@ from schemas.auth import LoginRequest, LoginResponse, RegisterResponse, Token
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 security = HTTPBearer()
+
+# Initialize logger for auth operations
+logger = get_logger("auth")
 
 
 @router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
@@ -35,8 +39,11 @@ async def register_user(user_data: UserCreate, db: Session = Depends(get_db)):
     - **first_name**: User's first name
     - **last_name**: User's last name
     """
+    logger.info("User registration attempt", username=user_data.username, email=user_data.email)
+    
     # Check if username already exists
     if db.query(User).filter(User.username == user_data.username).first():
+        logger.warning("Registration failed - username already exists", username=user_data.username)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Username already registered"
@@ -44,6 +51,7 @@ async def register_user(user_data: UserCreate, db: Session = Depends(get_db)):
     
     # Check if email already exists
     if db.query(User).filter(User.email == user_data.email).first():
+        logger.warning("Registration failed - email already exists", email=user_data.email)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already registered"
@@ -69,6 +77,11 @@ async def register_user(user_data: UserCreate, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(db_user)
         
+        logger.info("User registered successfully", 
+                   username=db_user.username, 
+                   user_id=db_user.id, 
+                   email=db_user.email)
+        
         # Return user data without sensitive information
         user_dict = {
             "id": db_user.id,
@@ -87,11 +100,23 @@ async def register_user(user_data: UserCreate, db: Session = Depends(get_db)):
             user=user_dict
         )
     
-    except IntegrityError:
+    except IntegrityError as e:
         db.rollback()
+        logger.error("Registration failed - database integrity error", 
+                    username=user_data.username, 
+                    error=str(e))
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="User with this username or email already exists"
+        )
+    except Exception as e:
+        db.rollback()
+        logger.error("Registration failed - unexpected error", 
+                    username=user_data.username, 
+                    error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Registration failed due to server error"
         )
 
 
@@ -103,12 +128,15 @@ async def login_user(login_data: LoginRequest, db: Session = Depends(get_db)):
     - **username**: Username or email address
     - **password**: User's password
     """
+    logger.info("Login attempt", username_or_email=login_data.username)
+    
     # Find user by username or email
     user = db.query(User).filter(
         (User.username == login_data.username) | (User.email == login_data.username)
     ).first()
     
     if not user or not verify_password(login_data.password, user.password_hash):
+        logger.warning("Login failed - invalid credentials", username_or_email=login_data.username)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username/email or password",
@@ -116,6 +144,9 @@ async def login_user(login_data: LoginRequest, db: Session = Depends(get_db)):
         )
     
     if not user.is_active:
+        logger.warning("Login failed - account deactivated", 
+                      username=user.username, 
+                      user_id=user.id)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Account is deactivated"
@@ -136,6 +167,7 @@ async def login_user(login_data: LoginRequest, db: Session = Depends(get_db)):
         session.session_token = access_token
         session.updated_at = datetime.now(timezone.utc)
         session.expires_at = datetime.now(timezone.utc) + access_token_expires
+        logger.debug("Updated existing user session", username=user.username, user_id=user.id)
     else:
         session = UserSession(
             user_id=user.id,
@@ -143,8 +175,14 @@ async def login_user(login_data: LoginRequest, db: Session = Depends(get_db)):
             expires_at=datetime.now(timezone.utc) + access_token_expires
         )
         db.add(session)
+        logger.debug("Created new user session", username=user.username, user_id=user.id)
     
     db.commit()
+    
+    logger.info("Login successful", 
+               username=user.username, 
+               user_id=user.id, 
+               role=user.role.value)
     
     # Return user data without sensitive information
     user_dict = {
@@ -172,11 +210,16 @@ async def logout_user(current_user: User = Depends(get_current_active_user), db:
     """
     Logout user by invalidating their session.
     """
+    logger.info("Logout request", username=current_user.username, user_id=current_user.id)
+    
     # Find and delete the user's session
     session = db.query(UserSession).filter(UserSession.user_id == current_user.id).first()
     if session:
         db.delete(session)
         db.commit()
+        logger.info("User session deleted", username=current_user.username, user_id=current_user.id)
+    else:
+        logger.warning("No session found for logout", username=current_user.username, user_id=current_user.id)
     
     return {"message": "Successfully logged out"}
 
@@ -186,6 +229,7 @@ async def get_current_user_info(current_user: User = Depends(get_current_active_
     """
     Get current authenticated user's information.
     """
+    logger.debug("User info requested", username=current_user.username, user_id=current_user.id)
     return current_user
 
 
@@ -198,6 +242,8 @@ async def update_current_user(
     """
     Update current authenticated user's information.
     """
+    logger.info("User profile update request", username=current_user.username, user_id=current_user.id)
+    
     # Update only provided fields
     update_data = user_update.dict(exclude_unset=True)
     

@@ -3,7 +3,6 @@ from fastapi.middleware.cors import CORSMiddleware
 import os
 
 # Import Phase 7 enhancements
-from core.logging import setup_logging, get_logger
 from core.exceptions import setup_exception_handlers
 from core.middleware import setup_middleware
 
@@ -14,9 +13,6 @@ from routers import (
     analytics, background_tasks, health
 )
 
-# Setup structured logging
-setup_logging()
-logger = get_logger("app")
 
 # Create FastAPI app instance
 app = FastAPI(
@@ -73,7 +69,6 @@ async def health_check():
     """
     Basic health check endpoint to verify the API is running.
     """
-    logger.info("Health check endpoint accessed")
     return {"status": "ok", "message": "Study Helper Backend API is running"}
 
 
@@ -83,7 +78,6 @@ async def root():
     """
     Root endpoint providing basic API information.
     """
-    logger.info("Root endpoint accessed")
     return {
         "message": "Welcome to Study Helper Backend API",
         "version": "0.1.0",
@@ -103,10 +97,8 @@ async def root():
 @app.on_event("startup")
 async def startup_event():
     """Handle application startup."""
-    logger.info("Application starting up", version="0.1.0")
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Handle application shutdown."""
-    logger.info("Application shutting down")

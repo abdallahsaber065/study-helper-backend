@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     gemini_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
     
+    # Gemini AI Configuration
+    gemini_model: str = "gemini-2.0-flash"
+    
     # Free tier limits
     free_tier_gemini_limit: int = 10  # Max number of free Gemini API calls per user
     free_tier_openai_limit: int = 5   # Max number of free OpenAI API calls per user
@@ -56,7 +59,7 @@ class Settings(BaseSettings):
     default_free_user_username: Optional[str] = None
     default_free_user_email: Optional[str] = None
     default_free_user_password: Optional[str] = None
-    force_reset_password_free: bool = False
+    force_reset_password_free: bool = True
     
     # Application settings
     app_name: str = "Study Helper Backend API"
@@ -117,7 +120,5 @@ class Settings(BaseSettings):
 settings = Settings()
 
 
-# Gemini settings
-GEMINI_MODEL = "gemini-2.0-flash"
-GEMINI_MAX_TOKENS = 2048
-GEMINI_TEMPERATURE = 0.3
+# Gemini AI Configuration Constants (using settings values)
+GEMINI_MODEL = settings.gemini_model

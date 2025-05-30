@@ -3,20 +3,28 @@ FastAPI main application entry point.
 """
 import os
 from fastapi import FastAPI, Depends
+import json
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
-from db_config import get_db, engine
+from db_config import get_db
 from models.models import Base, User, AiApiKey, AiProviderEnum
 from app import app
 from core.security import get_password_hash, encrypt_api_key
-import logging
 from core.config import settings
 
-logger = logging.getLogger("startup")
+os.makedirs("cache", exist_ok=True)
+
+# Flag to prevent duplicate startup execution
+_startup_executed = False
 
 @app.on_event("startup")
 async def startup_db_client():
     """Initialize database and default users on startup."""
+    global _startup_executed
+    
+    if _startup_executed:
+        return
+    
     try:
         db = next(get_db())
         
@@ -52,11 +60,9 @@ async def startup_db_client():
                 db.add(admin_user)
                 db.commit()
                 db.refresh(admin_user)
-                logger.info(f"Created default admin user: {admin_username}")
             elif force_reset_admin:
                 admin_user.password_hash = get_password_hash(admin_password)
                 db.commit()
-                logger.info(f"Reset password for admin user: {admin_username}")
         
         if free_username and free_email and free_password:
             free_user = db.query(User).filter(User.username == free_username).first()
@@ -75,11 +81,9 @@ async def startup_db_client():
                 db.add(free_user)
                 db.commit()
                 db.refresh(free_user)
-                logger.info(f"Created default free user: {free_username}")
             elif force_reset_free:
                 free_user.password_hash = get_password_hash(free_password)
                 db.commit()
-                logger.info(f"Reset password for free user: {free_username}")
             
             # Add Gemini API key to free user if provided
             if gemini_api_key and free_user:
@@ -98,12 +102,24 @@ async def startup_db_client():
                     )
                     db.add(api_key)
                     db.commit()
-                    logger.info(f"Added Gemini API key to free user: {free_username}")
+                
+        # Mark startup as completed
+        _startup_executed = True
                 
     except Exception as e:
-        logger.error(f"Error during startup: {str(e)}")
+        _startup_executed = True  # Prevent retry loops
 
 # Run the application
 if __name__ == "__main__":
+    # Export OpenAPI schema to a JSON file
+    try:
+        openapi_schema = app.openapi()
+        output_path = "cache/openapi.json"
+        with open(output_path, "w") as f:
+            json.dump(openapi_schema, f, indent=2)
+        print(f"OpenAPI schema successfully exported to {output_path}")
+    except Exception as e:
+        print(f"Error exporting OpenAPI schema: {e}")
+
     import uvicorn
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)

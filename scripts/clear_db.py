@@ -329,7 +329,6 @@ def clear_cache_files():
     cache_dirs = [
         "cache/file_uploads",
         "cache/test_files",  # If this exists
-        "file_uploads",  # Main uploads directory
     ]
 
     total_deleted = 0

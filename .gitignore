@@ -76,3 +76,9 @@ summaries
 .cursor
 
 file_uploads/*
+
+# Logs
+logs/*.log
+logs/*.log.*
+logs/*.gz
+!logs/README.md

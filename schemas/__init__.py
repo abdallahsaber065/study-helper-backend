@@ -17,6 +17,12 @@ from .community import (
     CommunitySubjectFileCreate, CommunitySubjectFileRead, CommunitySubjectFileUpdate,
     CommunityStats
 )
+from .summary import *
+from .ai_cache import *
+from .comment import *
+from .rating import *
+from .notification import *
+from .preference import *
 
 __all__ = [
     "UserCreate", "UserRead", "UserUpdate", "UserSession",

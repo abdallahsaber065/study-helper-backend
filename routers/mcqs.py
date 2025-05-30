@@ -9,7 +9,7 @@ from db_config import get_db
 from core.security import get_current_user
 from models.models import (
     User, QuestionTag, McqQuestion, McqQuestionTagLink, 
-    McqQuiz, McqQuizQuestionLink, QuizSession
+    McqQuiz, McqQuizQuestionLink, QuizSession, CommunityMember
 )
 from schemas.mcq import (
     # Tag schemas
@@ -25,6 +25,7 @@ from schemas.mcq import (
 )
 from services.mcq_service import MCQGeneratorService
 from services.community_service import CommunityService
+from services.notification_service import NotificationService
 
 router = APIRouter(prefix="/mcqs", tags=["MCQs and Quizzes"])
 
@@ -420,10 +421,22 @@ async def get_quiz(
     
     # Check access permissions
     if not quiz.is_public and quiz.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied to this quiz"
-        )
+        # Check if this is a community quiz and user is a member
+        if quiz.community_id:
+            member = db.query(CommunityMember).filter(
+                CommunityMember.community_id == quiz.community_id,
+                CommunityMember.user_id == current_user.id
+            ).first()
+            if not member:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied to this quiz"
+                )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied to this quiz"
+            )
     
     # Get questions in order
     quiz_questions = db.query(McqQuizQuestionLink).filter(
@@ -459,10 +472,22 @@ async def start_quiz_session(
     
     # Check access permissions
     if not quiz.is_public and quiz.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied to this quiz"
-        )
+        # Check if this is a community quiz and user is a member
+        if quiz.community_id:
+            member = db.query(CommunityMember).filter(
+                CommunityMember.community_id == quiz.community_id,
+                CommunityMember.user_id == current_user.id
+            ).first()
+            if not member:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied to this quiz"
+                )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied to this quiz"
+            )
     
     # Get question count
     question_count = db.query(McqQuizQuestionLink).filter(
@@ -540,6 +565,15 @@ async def submit_quiz_session(
     
     db.commit()
     db.refresh(session)
+    
+    # Send notification about quiz completion
+    notification_service = NotificationService(db)
+    notification_service.notify_quiz_result(
+        user_id=current_user.id,
+        quiz_id=session.quiz_id,
+        score=correct_answers,
+        total_questions=session.total_questions
+    )
     
     return session
 

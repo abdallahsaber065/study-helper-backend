@@ -382,17 +382,51 @@ def clear_cache_files():
     print(f"   🗂️  Deleted {total_deleted} cache files in total")
 
 def clear_all_logs():
-    """Clear all logs from the logs directory."""
+    """Clear all logs from the logs directory with proper handler cleanup."""
     print("🗑️  Clearing all logs...")
+    
+    # Step 1: Force close all logging handlers
+    try:
+        from core.logging import force_close_all_handlers, shutdown_logging
+        print("   🔧 Closing logging handlers...")
+        force_close_all_handlers()
+        shutdown_logging()
+        
+        # Force garbage collection
+        import gc
+        gc.collect()
+        
+        # Give Windows a moment to release file handles
+        import time
+        time.sleep(1)
+        
+        print("   ✅ Logging handlers closed")
+    except Exception as e:
+        print(f"   ⚠️  Error closing handlers: {e}")
+    
+    # Step 2: Delete log files
     logs_dir = Path("logs")
     if logs_dir.exists() and logs_dir.is_dir():
+        deleted_count = 0
+        error_count = 0
+        
         for file in logs_dir.iterdir():
             if file.is_file():
                 try:
                     file.unlink()
                     print(f"   ✅ Deleted {file.name}")
+                    deleted_count += 1
+                except PermissionError as e:
+                    print(f"   ❌ Permission denied: {file.name} - File may still be in use")
+                    error_count += 1
                 except Exception as e:
                     print(f"   ⚠️  Error deleting {file.name}: {str(e)}")
+                    error_count += 1
+        
+        if error_count > 0:
+            print(f"\n   ⚠️  {error_count} files could not be deleted.")
+            print("   💡 Try running: python scripts/force_clear_logs.py")
+            print("   💡 Or restart your terminal/IDE and try again")
     else:
         print(f"   ℹ️  Logs directory not found or not a directory: {logs_dir}")
 
@@ -430,7 +464,7 @@ def main():
 
     args = parser.parse_args()
 
-    if not any([args.all, args.user_data, args.test_users, args.cache]):
+    if not any([args.all, args.user_data, args.test_users, args.cache, args.logs]):
         print("🧹 Database & Cache Cleanup Utility")
         print("=" * 35)
         parser.print_help()
@@ -450,7 +484,7 @@ def main():
             print(f"   {i:2d}. {table}")
         
         print(f"\nTotal: {len(all_tables)} tables")
-        print("\nExample: python scripts/clear_db.py --test-users --cache --yes")
+        print("\nExample: python scripts/clear_db.py --test-users --cache --logs --yes")
         return
 
     db_session = None  # Initialize to None

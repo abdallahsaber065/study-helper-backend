@@ -22,6 +22,7 @@ router = APIRouter(prefix="/summaries", tags=["Summaries"])
 @router.post("/generate", response_model=SummaryGenerateResponse)
 async def generate_combined_summary(
     request: SummaryGenerateRequest,
+    community_id: Optional[int] = Query(None, description="Community ID to associate summary with"),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
@@ -32,7 +33,20 @@ async def generate_combined_summary(
     - Combines files with provided text
     - Uses AI to generate a comprehensive summary
     - Saves the summary to the database
+    - Optionally associates with a community (requires admin/moderator access)
     """
+    # Check community access if community_id is provided
+    if community_id:
+        from services.community_service import CommunityService
+        community_service = CommunityService(db)
+        try:
+            community_service._check_admin_or_moderator(current_user, community_id)
+        except HTTPException:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Admin or moderator access required to create community summaries"
+            )
+    
     # Initialize the summary generator service
     summary_service = SummaryGeneratorService(db)
     
@@ -41,7 +55,8 @@ async def generate_combined_summary(
         summary = await summary_service.generate_summary(
             user=current_user,
             physical_file_ids=request.physical_file_ids,
-            custom_instructions=request.custom_instructions
+            custom_instructions=request.custom_instructions,
+            community_id=community_id
         )
         
         return SummaryGenerateResponse(

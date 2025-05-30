@@ -393,4 +393,70 @@ async def get_community_stats(
     service = CommunityService(db)
     stats = service.get_community_stats(community_id, current_user)
     
-    return CommunityStats(**stats) 
+    return CommunityStats(**stats)
+
+
+# ============ Community Content ============
+
+@router.get("/{community_id}/summaries", response_model=List[dict])
+async def get_community_summaries(
+    community_id: int,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get summaries for a specific community."""
+    service = CommunityService(db)
+    service._check_community_member(current_user, community_id)
+    
+    from models.models import Summary
+    
+    summaries = db.query(Summary).filter(
+        Summary.community_id == community_id
+    ).offset(skip).limit(limit).all()
+    
+    return [
+        {
+            "id": summary.id,
+            "title": summary.title,
+            "user_id": summary.user_id,
+            "created_at": summary.created_at,
+            "updated_at": summary.updated_at,
+            "community_id": summary.community_id
+        }
+        for summary in summaries
+    ]
+
+
+@router.get("/{community_id}/quizzes", response_model=List[dict])
+async def get_community_quizzes(
+    community_id: int,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get quizzes for a specific community."""
+    service = CommunityService(db)
+    service._check_community_member(current_user, community_id)
+    
+    from models.models import McqQuiz
+    
+    quizzes = db.query(McqQuiz).filter(
+        McqQuiz.community_id == community_id
+    ).offset(skip).limit(limit).all()
+    
+    return [
+        {
+            "id": quiz.id,
+            "title": quiz.title,
+            "description": quiz.description,
+            "difficulty_level": quiz.difficulty_level,
+            "user_id": quiz.user_id,
+            "created_at": quiz.created_at,
+            "is_public": quiz.is_public,
+            "community_id": quiz.community_id
+        }
+        for quiz in quizzes
+    ] 

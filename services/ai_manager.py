@@ -3,6 +3,7 @@ Central AI Manager service for handling interactions with AI providers.
 """
 import os
 import json
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, TypeVar, Type, Generic, List
 from pydantic import BaseModel
@@ -13,8 +14,29 @@ from models.models import AiApiKey, GeminiFileCache, AiProviderEnum, PhysicalFil
 from schemas.ai_cache import GeminiFileCacheCreate
 from core.config import settings
 from core.security import verify_password, get_password_hash, decrypt_api_key
+from core.exceptions import AIServiceException
+import structlog
 
 T = TypeVar('T', bound=BaseModel)
+logger = structlog.get_logger("ai_manager")
+
+
+class AIRetryConfig:
+    """Configuration for AI service retry logic."""
+    
+    def __init__(
+        self,
+        max_retries: int = 3,
+        base_delay: float = 1.0,
+        max_delay: float = 60.0,
+        backoff_multiplier: float = 2.0,
+        timeout_seconds: float = 120.0
+    ):
+        self.max_retries = max_retries
+        self.base_delay = base_delay
+        self.max_delay = max_delay
+        self.backoff_multiplier = backoff_multiplier
+        self.timeout_seconds = timeout_seconds
 
 
 class AIManager(Generic[T]):
@@ -26,205 +48,253 @@ class AIManager(Generic[T]):
     - Managing file uploads to AI providers
     - Checking/updating the AI file cache
     - Constructing AI requests with appropriate configurations
-    - Executing AI model calls
+    - Executing AI model calls with retry logic and error handling
     """
     
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, retry_config: Optional[AIRetryConfig] = None):
         self.db = db
         self._gemini_client = None
         self._openai_client = None
+        self.retry_config = retry_config or AIRetryConfig()
     
     async def get_api_key(self, user_id: int, provider: AiProviderEnum) -> Optional[str]:
         """
-        Get an API key for the specified provider and user.
-        
-        Args:
-            user_id: The ID of the user
-            provider: The AI provider to get the key for
+        Get the API key for a user and provider.
+        Falls back to free tier if user doesn't have their own key.
+        """
+        try:
+            # First, try to get the user's own API key
+            user_key = self.db.query(AiApiKey).filter(
+                AiApiKey.user_id == user_id,
+                AiApiKey.provider_name == provider,
+                AiApiKey.is_active == True
+            ).first()
             
-        Returns:
-            str: The decrypted API key or None if not found
-        """
-        print(f"🔍 DEBUG: Getting API key for user {user_id}, provider {provider}")
-        
-        # Try to get a user-specific key first
-        api_key_record = self.db.query(AiApiKey).filter(
-            AiApiKey.user_id == user_id,
-            AiApiKey.provider_name == provider,
-            AiApiKey.is_active == True
-        ).first()
-        
-        if api_key_record:
-            print(f"✅ DEBUG: Found user-specific API key")
-            # Decrypt the API key
-            return decrypt_api_key(api_key_record.encrypted_api_key)
-        
-        print(f"🔍 DEBUG: No user-specific key found, checking free tier limits...")
-        
-        # Check free tier limits
-        # Get or create user's free tier usage record
-        usage_record = self.db.query(UserFreeApiUsage).filter(
-            UserFreeApiUsage.user_id == user_id,
-            UserFreeApiUsage.api_provider == provider
-        ).first()
-        
-        if not usage_record:
-            print(f"🔍 DEBUG: Creating new usage record for user {user_id}")
-            # Create a new usage record if one doesn't exist
-            usage_record = UserFreeApiUsage(
-                user_id=user_id,
-                api_provider=provider,
-                usage_count=0
-            )
-            self.db.add(usage_record)
-            self.db.commit()
-            self.db.refresh(usage_record)
-        
-        # Check if user has exceeded their free tier limit
-        free_tier_limit = settings.free_tier_gemini_limit if provider == AiProviderEnum.Google else settings.free_tier_openai_limit
-        
-        print(f"🔍 DEBUG: Usage count: {usage_record.usage_count}, Limit: {free_tier_limit}")
-        
-        if usage_record.usage_count >= free_tier_limit:
-            print(f"❌ DEBUG: User exceeded free tier limit")
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"You have reached your free tier limit ({free_tier_limit}) for {provider.value}. Please add your own API key."
-            )
-        
-        # Try to get the key from the free user
-        free_username = os.getenv("DEFAULT_FREE_USER_USERNAME")
-        print(f"🔍 DEBUG: Looking for free user with username: {free_username}")
-        
-        if free_username:
-            free_user = self.db.query(User).filter(User.username == free_username).first()
-            if free_user:
-                print(f"✅ DEBUG: Found free user with ID: {free_user.id}")
-                free_user_key = self.db.query(AiApiKey).filter(
-                    AiApiKey.user_id == free_user.id,
-                    AiApiKey.provider_name == provider,
-                    AiApiKey.is_active == True
-                ).first()
-                
-                if free_user_key:
-                    print(f"✅ DEBUG: Found free user's API key")
-                    return decrypt_api_key(free_user_key.encrypted_api_key)
+            if user_key:
+                logger.info("Using user's own API key", user_id=user_id, provider=provider.value)
+                return decrypt_api_key(user_key.encrypted_api_key)
+            
+            # Check free tier usage
+            await self.check_free_tier_usage(user_id, provider)
+            
+            # Try to get the key from the free user
+            free_username = os.getenv("DEFAULT_FREE_USER_USERNAME")
+            logger.debug("Looking for free user", username=free_username)
+            
+            if free_username:
+                free_user = self.db.query(User).filter(User.username == free_username).first()
+                if free_user:
+                    free_user_key = self.db.query(AiApiKey).filter(
+                        AiApiKey.user_id == free_user.id,
+                        AiApiKey.provider_name == provider,
+                        AiApiKey.is_active == True
+                    ).first()
+                    
+                    if free_user_key:
+                        logger.info("Using free tier API key", user_id=user_id, provider=provider.value)
+                        return decrypt_api_key(free_user_key.encrypted_api_key)
+                    else:
+                        logger.warning("Free user has no API key", provider=provider.value)
                 else:
-                    print(f"❌ DEBUG: Free user has no API key for {provider}")
-            else:
-                print(f"❌ DEBUG: Free user not found")
-        
-        # Fall back to system key if free user key not found
-        print(f"🔍 DEBUG: Falling back to system environment key")
-        if provider == AiProviderEnum.Google:
-            system_key = settings.gemini_api_key
-            print(f"✅ DEBUG: Using system Gemini key: {system_key[:20]}..." if system_key else "❌ DEBUG: No system Gemini key")
-            return system_key
-        elif provider == AiProviderEnum.OpenAI:
-            system_key = settings.openai_api_key
-            print(f"✅ DEBUG: Using system OpenAI key: {system_key[:20]}..." if system_key else "❌ DEBUG: No system OpenAI key")
-            return system_key
-        
-        print(f"❌ DEBUG: No API key found for provider {provider}")
-        return None
-    
-    async def increment_free_tier_usage(self, user_id: int, provider: AiProviderEnum) -> None:
-        """
-        Increment the free tier usage count for a user and provider.
-        
-        Args:
-            user_id: The ID of the user
-            provider: The AI provider
-        """
-        # Check if the user has their own API key
-        has_own_key = self.db.query(AiApiKey).filter(
-            AiApiKey.user_id == user_id,
-            AiApiKey.provider_name == provider,
-            AiApiKey.is_active == True
-        ).first() is not None
-        
-        # If they have their own key, don't increment free tier usage
-        if has_own_key:
-            return
-        
-        # Get user's free tier usage record
-        usage_record = self.db.query(UserFreeApiUsage).filter(
-            UserFreeApiUsage.user_id == user_id,
-            UserFreeApiUsage.api_provider == provider
-        ).first()
-        
-        if not usage_record:
-            # Create a new usage record if one doesn't exist
-            usage_record = UserFreeApiUsage(
-                user_id=user_id,
-                api_provider=provider,
-                usage_count=1,
-                last_used_at=datetime.now(timezone.utc)
+                    logger.warning("Free user not found", username=free_username)
+            
+            # Fall back to system key if free user key not found
+            logger.debug("Falling back to system environment key", provider=provider.value)
+            system_key = None
+            
+            if provider == AiProviderEnum.Google:
+                system_key = settings.gemini_api_key
+            elif provider == AiProviderEnum.OpenAI:
+                system_key = settings.openai_api_key
+            
+            if system_key:
+                logger.info("Using system API key", provider=provider.value)
+                return system_key
+            
+            logger.error("No API key available", user_id=user_id, provider=provider.value)
+            raise AIServiceException(
+                detail=f"No {provider.value} API key available. Please add your own API key.",
+                provider=provider.value
             )
-            self.db.add(usage_record)
-        else:
-            # Increment existing usage record
-            usage_record.usage_count += 1
-            usage_record.last_used_at = datetime.now(timezone.utc)
-        
-        self.db.commit()
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("Error retrieving API key", error=str(e), user_id=user_id, provider=provider.value)
+            raise AIServiceException(
+                detail=f"Failed to retrieve API key: {str(e)}",
+                provider=provider.value
+            )
+    
+    async def check_free_tier_usage(self, user_id: int, provider: AiProviderEnum):
+        """
+        Check if the user has exceeded their free tier usage limit.
+        """
+        try:
+            free_tier_limit = (settings.free_tier_gemini_limit if provider == AiProviderEnum.Google 
+                             else settings.free_tier_openai_limit)
+            
+            usage_record = self.db.query(UserFreeApiUsage).filter(
+                UserFreeApiUsage.user_id == user_id,
+                UserFreeApiUsage.api_provider == provider
+            ).first()
+            
+            if not usage_record:
+                return  # No usage record means they're within limits
+            
+            logger.debug("Checking free tier usage", 
+                        user_id=user_id, 
+                        usage_count=usage_record.usage_count, 
+                        limit=free_tier_limit)
+            
+            if usage_record.usage_count >= free_tier_limit:
+                logger.warning("User exceeded free tier limit", 
+                              user_id=user_id, 
+                              provider=provider.value, 
+                              usage=usage_record.usage_count, 
+                              limit=free_tier_limit)
+                raise AIServiceException(
+                    detail=f"You have reached your free tier limit ({free_tier_limit}) for {provider.value}. Please add your own API key.",
+                    provider=provider.value
+                )
+                
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("Error checking free tier usage", error=str(e), user_id=user_id, provider=provider.value)
+            raise AIServiceException(
+                detail=f"Failed to check usage limits: {str(e)}",
+                provider=provider.value
+            )
+    
+    async def increment_free_tier_usage(self, user_id: int, provider: AiProviderEnum):
+        """
+        Increment the free tier usage count for a user.
+        """
+        try:
+            usage_record = self.db.query(UserFreeApiUsage).filter(
+                UserFreeApiUsage.user_id == user_id,
+                UserFreeApiUsage.api_provider == provider
+            ).first()
+            
+            if not usage_record:
+                usage_record = UserFreeApiUsage(
+                    user_id=user_id,
+                    api_provider=provider,
+                    usage_count=1,
+                    last_used_at=datetime.now(timezone.utc)
+                )
+                self.db.add(usage_record)
+            else:
+                usage_record.usage_count += 1
+                usage_record.last_used_at = datetime.now(timezone.utc)
+            
+            self.db.commit()
+            logger.debug("Incremented free tier usage", 
+                        user_id=user_id, 
+                        provider=provider.value, 
+                        new_count=usage_record.usage_count)
+                        
+        except Exception as e:
+            logger.error("Error incrementing usage", error=str(e), user_id=user_id, provider=provider.value)
+            self.db.rollback()
     
     async def initialize_gemini_client(self, user_id: int) -> bool:
         """
         Initialize the Google Gemini client for the user.
-        
-        Args:
-            user_id: The ID of the user
-            
-        Returns:
-            bool: True if initialization was successful
         """
         try:
             from google import genai
         except ImportError:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Google Generative AI library not installed"
+            logger.error("Google Generative AI library not installed")
+            raise AIServiceException(
+                detail="Google Generative AI library not installed",
+                provider="Google"
             )
         
         api_key = await self.get_api_key(user_id, AiProviderEnum.Google)
         if not api_key:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No Google Gemini API key available"
+            raise AIServiceException(
+                detail="No Google Gemini API key available",
+                provider="Google"
             )
         
         self._gemini_client = genai.Client(api_key=api_key)
+        logger.info("Gemini client initialized", user_id=user_id)
         return True
     
     async def initialize_openai_client(self, user_id: int) -> bool:
         """
         Initialize the OpenAI client for the user.
-        
-        Args:
-            user_id: The ID of the user
-            
-        Returns:
-            bool: True if initialization was successful
         """
         try:
             import openai
         except ImportError:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="OpenAI library not installed"
+            logger.error("OpenAI library not installed")
+            raise AIServiceException(
+                detail="OpenAI library not installed",
+                provider="OpenAI"
             )
         
         api_key = await self.get_api_key(user_id, AiProviderEnum.OpenAI)
         if not api_key:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No OpenAI API key available"
+            raise AIServiceException(
+                detail="No OpenAI API key available",
+                provider="OpenAI"
             )
         
         self._openai_client = openai.OpenAI(api_key=api_key)
+        logger.info("OpenAI client initialized", user_id=user_id)
         return True
-    
+
+    async def _retry_with_backoff(self, func, *args, **kwargs):
+        """
+        Execute a function with exponential backoff retry logic.
+        """
+        last_exception = None
+        
+        for attempt in range(self.retry_config.max_retries + 1):
+            try:
+                if asyncio.iscoroutinefunction(func):
+                    return await asyncio.wait_for(
+                        func(*args, **kwargs),
+                        timeout=self.retry_config.timeout_seconds
+                    )
+                else:
+                    return func(*args, **kwargs)
+                    
+            except asyncio.TimeoutError as e:
+                last_exception = e
+                logger.warning("AI request timeout", 
+                              attempt=attempt + 1, 
+                              timeout=self.retry_config.timeout_seconds)
+                
+            except Exception as e:
+                last_exception = e
+                logger.warning("AI request failed", 
+                              attempt=attempt + 1, 
+                              error=str(e))
+            
+            # Don't retry on the last attempt
+            if attempt < self.retry_config.max_retries:
+                delay = min(
+                    self.retry_config.base_delay * (self.retry_config.backoff_multiplier ** attempt),
+                    self.retry_config.max_delay
+                )
+                logger.info("Retrying AI request", delay_seconds=delay, attempt=attempt + 1)
+                await asyncio.sleep(delay)
+        
+        # All retries exhausted
+        logger.error("All AI request retries exhausted", error=str(last_exception))
+        if isinstance(last_exception, asyncio.TimeoutError):
+            raise AIServiceException(
+                detail=f"AI request timeout after {self.retry_config.timeout_seconds} seconds"
+            )
+        else:
+            raise AIServiceException(
+                detail=f"AI request failed after {self.retry_config.max_retries} retries: {str(last_exception)}"
+            )
+
     async def upload_file_to_gemini(
         self, 
         physical_file: PhysicalFile,
@@ -410,39 +480,36 @@ class AIManager(Generic[T]):
         system_instruction: Optional[str] = None
     ) -> Any:
         """
-        Generate content using Gemini model.
-        
-        Args:
-            user_id: The ID of the user
-            prompt: The text prompt
-            physical_file_ids: Optional list of file IDs to include
-            model: The Gemini model to use
-            response_schema: Optional Pydantic schema for structured response
-            system_instruction: Optional system instructions
-            
-        Returns:
-            The generated content (format depends on response_schema)
+        Generate content using Google Gemini with enhanced error handling and retry logic.
         """
-        # Initialize Gemini client if not already done
         if not self._gemini_client:
             await self.initialize_gemini_client(user_id)
         
-        # Get content parts
-        contents = await self.generate_content_parts(user_id, prompt, physical_file_ids)
-        
-        # Prepare generation config
-        generation_config = {}
-        
-        if system_instruction:
-            from google.genai import types
-            generation_config["system_instruction"] = system_instruction
-        
-        if response_schema:
-            from google.genai import types
-            generation_config["response_mime_type"] = "application/json"
-            generation_config["response_schema"] = response_schema.model_json_schema(by_alias=True)
-        
-        try:
+        async def _generate():
+            contents = []
+            generation_config = {}
+            
+            # Add files to contents if provided
+            if physical_file_ids:
+                for file_id in physical_file_ids:
+                    physical_file = self.db.query(PhysicalFile).filter(PhysicalFile.id == file_id).first()
+                    if physical_file:
+                        cache_entry = await self.upload_file_to_gemini(physical_file, user_id)
+                        # Use the correct file reference format for Gemini
+                        file_ref = cache_entry.gemini_file_uri
+                        contents.append(file_ref)
+            
+            # Add prompt after files
+            contents.append(prompt)
+            
+            # Configure generation parameters
+            if response_schema:
+                generation_config["response_mime_type"] = "application/json"
+                generation_config["response_schema"] = response_schema.model_json_schema()
+            
+            if system_instruction:
+                generation_config["system_instruction"] = system_instruction
+            
             # Generate content
             if generation_config:
                 from google.genai import types
@@ -457,7 +524,18 @@ class AIManager(Generic[T]):
                     contents=contents
                 )
             
-            # Increment free tier usage count for system API key users
+            return response
+        
+        try:
+            logger.info("Starting Gemini content generation", 
+                       user_id=user_id, 
+                       model=model, 
+                       has_files=bool(physical_file_ids),
+                       has_schema=bool(response_schema))
+            
+            response = await self._retry_with_backoff(_generate)
+            
+            # Increment free tier usage
             await self.increment_free_tier_usage(user_id, AiProviderEnum.Google)
             
             # Update last_used_at for the API key
@@ -471,20 +549,22 @@ class AIManager(Generic[T]):
                 api_key_record.last_used_at = datetime.now(timezone.utc)
                 self.db.commit()
             
-            # Return parsed response if schema provided, otherwise return text
+            # Parse response
             if response_schema:
                 try:
                     json_response = json.loads(response.text)
                     return response_schema.model_validate(json_response)
                 except Exception as e:
-                    # If parsing fails, return the raw text
+                    logger.warning("Failed to parse structured response", error=str(e))
                     return response.text
             else:
                 return response.text
-            
+                
+        except AIServiceException:
+            raise
         except Exception as e:
-            # Log the error
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to generate content with Gemini: {str(e)}"
+            logger.error("Gemini content generation failed", error=str(e), user_id=user_id)
+            raise AIServiceException(
+                detail=f"Failed to generate content with Gemini: {str(e)}",
+                provider="Google"
             ) 

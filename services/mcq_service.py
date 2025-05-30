@@ -19,29 +19,11 @@ from models.models import AiProviderEnum
 
 class MCQGeneratorService:
     """Service for generating MCQs using AI."""
-    
+
     def __init__(self, db: Session):
         self.db = db
         self.ai_manager = AIManager(db)
-    
-    def _get_system_instruction(self) -> str:
-        """Get the system instruction for MCQ generation."""
-        return """You are an expert educational content creator specialized in generating high-quality multiple choice questions (MCQs). Your task is to create MCQs that are:
-
-1. **Clear and Unambiguous**: Each question should have one clearly correct answer and plausible distractors
-2. **Educational**: Questions should test understanding, not just memorization
-3. **Well-Structured**: Follow standard MCQ format with 4 options (A, B, C, D)
-4. **Appropriately Difficult**: Match the specified difficulty level
-5. **Comprehensive**: Cover different aspects of the content
-
-**Guidelines:**
-- Questions should be 10-50 words long
-- Each option should be concise but complete
-- Explanations should clearly explain why the correct answer is right
-- Hints should guide thinking without giving away the answer
-- Categories should reflect the main topic being tested
-- Ensure good distribution across difficulty levels if multiple questions are requested"""
-
+        
     def _get_generation_prompt(
         self, 
         num_questions: int, 
@@ -49,28 +31,22 @@ class MCQGeneratorService:
         custom_instructions: Optional[str] = None
     ) -> str:
         """Generate the prompt for MCQ creation."""
-        
+
         base_prompt = f"""Generate a set of {num_questions} multiple choice questions (MCQs) based on the provided document(s). 
 
 **Requirements:**
 - Create exactly {num_questions} questions
-- Each question must have 4 options (A, B, C, D) with only one correct answer
-- Include explanations for correct answers
-- Provide helpful hints for each question
-- Assign appropriate categories/topics
 - Ensure questions test different concepts from the material"""
 
         if difficulty_level:
             base_prompt += f"\n- Target difficulty level: {difficulty_level}"
-        
+
         if custom_instructions:
             base_prompt += f"\n\n**Additional Instructions:**\n{custom_instructions}"
-        
-        base_prompt += "\n\nGenerate questions that cover the key concepts, definitions, processes, and applications mentioned in the document(s)."
-        
+
         return base_prompt
 
-    async def generate_mcqs_from_files(
+    async def generate_mcqs(
         self, 
         request: MCQGenerationRequest, 
         user: User
@@ -93,35 +69,39 @@ class MCQGeneratorService:
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"File with ID {file_id} not found"
                 )
-        
+
         # Generate system instruction and prompt
-        system_instruction = self._get_system_instruction()
+        with open("prompts/mcq/system_instruction.md", "r", encoding="utf-8") as file:
+            system_instruction = file.read()
+            
         prompt = self._get_generation_prompt(
             request.num_questions,
             request.difficulty_level.value if request.difficulty_level else None,
             request.custom_instructions
         )
-        
+
         try:
             # Generate MCQs using AI
-            response = await self.ai_manager.generate_content_with_gemini(
-                user_id=user.id,
-                prompt=prompt,
-                physical_file_ids=request.physical_file_ids,
-                response_schema=MCQGenerationResponse,
-                system_instruction=system_instruction
-            )
-            
+            response = (
+                await self.ai_manager.generate_content_with_gemini(
+                    user_id=user.id,
+                    prompt=prompt,
+                    physical_file_ids=request.physical_file_ids,
+                    response_schema=MCQGenerationResponse,
+                    system_instruction=system_instruction,
+                )
+            )   
+
             # If response is text (parsing failed), try to handle it
-            if isinstance(response, str):
+            if not isinstance(response, MCQGenerationResponse):
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="AI response could not be parsed. Please try again."
                 )
-            
+
             # Extract the MCQ set
             mcq_set = response.mcq_set
-            
+
             # Create or get tags
             tag_objects = []
             for tag_name in mcq_set.tags:
@@ -132,7 +112,7 @@ class MCQGeneratorService:
                     self.db.commit()
                     self.db.refresh(tag)
                 tag_objects.append(tag)
-            
+
             # Create MCQ questions in database
             created_questions = []
             for mcq_question in mcq_set.questions:
@@ -152,7 +132,7 @@ class MCQGeneratorService:
                 self.db.add(question)
                 self.db.commit()
                 self.db.refresh(question)
-                
+
                 # Link with tags
                 for tag in tag_objects:
                     tag_link = McqQuestionTagLink(
@@ -160,11 +140,11 @@ class MCQGeneratorService:
                         tag_id=tag.id
                     )
                     self.db.add(tag_link)
-                
+
                 created_questions.append(question)
-            
+
             self.db.commit()
-            
+
             result = {
                 "message": "MCQs generated successfully",
                 "questions_created": len(created_questions),
@@ -172,12 +152,12 @@ class MCQGeneratorService:
                 "generated_mcq_set": mcq_set,
                 "quiz": None
             }
-            
+
             # Create quiz if requested
             if request.create_quiz:
                 quiz_title = request.quiz_title or mcq_set.title
                 quiz_description = request.quiz_description or mcq_set.description
-                
+
                 quiz = McqQuiz(
                     title=quiz_title,
                     description=quiz_description,
@@ -189,7 +169,7 @@ class MCQGeneratorService:
                 self.db.add(quiz)
                 self.db.commit()
                 self.db.refresh(quiz)
-                
+
                 # Link questions to quiz
                 for idx, question in enumerate(created_questions):
                     quiz_link = McqQuizQuestionLink(
@@ -198,18 +178,18 @@ class MCQGeneratorService:
                         display_order=idx + 1
                     )
                     self.db.add(quiz_link)
-                
+
                 self.db.commit()
-                
+
                 result["quiz"] = {
                     "id": quiz.id,
                     "title": quiz.title,
                     "description": quiz.description,
                     "question_count": len(created_questions)
                 }
-            
+
             return result
-            
+
         except Exception as e:
             self.db.rollback()
             if isinstance(e, HTTPException):

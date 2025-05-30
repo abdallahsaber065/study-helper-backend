@@ -423,11 +423,51 @@ class CentralizedLogManager:
     
     def shutdown(self):
         """Shutdown all handlers gracefully."""
-        for handler in self._handlers.values():
-            try:
-                handler.close()
-            except Exception as e:
-                print(f"Error closing handler: {e}")
+        try:
+            # Close all custom handlers first
+            for handler_name, handler in self._handlers.items():
+                try:
+                    if hasattr(handler, 'close'):
+                        handler.close()
+                except Exception as e:
+                    print(f"Error closing handler {handler_name}: {e}")
+            
+            # Clear handlers dict
+            self._handlers.clear()
+            
+            # Close all logger handlers
+            for logger_name, structured_logger in self._loggers.items():
+                try:
+                    logger = structured_logger._logger
+                    for handler in logger.handlers[:]:  # Copy list to avoid modification during iteration
+                        try:
+                            handler.close()
+                            logger.removeHandler(handler)
+                        except Exception as e:
+                            print(f"Error closing handler for logger {logger_name}: {e}")
+                except Exception as e:
+                    print(f"Error processing logger {logger_name}: {e}")
+            
+            # Clear structured loggers
+            self._loggers.clear()
+            
+            # Close root logger handlers
+            root_logger = logging.getLogger()
+            for handler in root_logger.handlers[:]:  # Copy list to avoid modification during iteration
+                try:
+                    handler.close()
+                    root_logger.removeHandler(handler)
+                except Exception as e:
+                    print(f"Error closing root handler: {e}")
+            
+            # Call logging shutdown to ensure all handlers are properly closed
+            logging.shutdown()
+            
+        except Exception as e:
+            print(f"Error during logging shutdown: {e}")
+        
+        # Reset initialization flag
+        self._initialized = False
 
 
 # Global singleton instance
@@ -463,6 +503,32 @@ def shutdown_logging():
     global _log_manager
     if _log_manager is not None:
         _log_manager.shutdown()
+        _log_manager = None
+
+
+def force_close_all_handlers():
+    """Force close all logging handlers to release file locks."""
+    try:
+        # Get all existing loggers
+        loggers = [logging.getLogger(name) for name in logging.root.manager.loggerDict]
+        loggers.append(logging.getLogger())  # Add root logger
+        
+        # Close all handlers for all loggers
+        for logger in loggers:
+            for handler in logger.handlers[:]:
+                try:
+                    handler.close()
+                    logger.removeHandler(handler)
+                except Exception as e:
+                    print(f"Error force closing handler: {e}")
+        
+        # Call logging shutdown
+        logging.shutdown()
+        
+        print("✅ All logging handlers force closed")
+        
+    except Exception as e:
+        print(f"❌ Error during force close: {e}")
 
 
 # Pre-configured logger instances for common components
@@ -473,6 +539,13 @@ database_logger = get_logger("database")
 access_logger = get_logger("access")
 
 
-# Register shutdown handler
+def _cleanup_logging():
+    """Cleanup function to be called at exit."""
+    try:
+        shutdown_logging()
+    except Exception as e:
+        print(f"Error during logging cleanup: {e}")
+
+
 import atexit
-atexit.register(shutdown_logging) 
+atexit.register(_cleanup_logging) 

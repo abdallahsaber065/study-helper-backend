@@ -366,6 +366,7 @@ class Community(Base):
     __tablename__ = "community"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    community_code = Column(String(10), nullable=False, unique=True, index=True)
     name = Column(String(150), nullable=False, unique=True, index=True)
     description = Column(Text, nullable=True)
     creator_id = Column(Integer, ForeignKey("user.id"), nullable=False)

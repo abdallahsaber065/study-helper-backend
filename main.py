@@ -14,16 +14,9 @@ from core.config import settings
 
 os.makedirs("cache", exist_ok=True)
 
-# Flag to prevent duplicate startup execution
-_startup_executed = False
-
 @app.on_event("startup")
 async def startup_db_client():
     """Initialize database and default users on startup."""
-    global _startup_executed
-    
-    if _startup_executed:
-        return
     
     try:
         db = next(get_db())
@@ -103,11 +96,9 @@ async def startup_db_client():
                     db.add(api_key)
                     db.commit()
                 
-        # Mark startup as completed
-        _startup_executed = True
                 
     except Exception as e:
-        _startup_executed = True  # Prevent retry loops
+        print(f"Error initializing database: {e}")
 
 # Run the application
 if __name__ == "__main__":

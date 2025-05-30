@@ -33,40 +33,51 @@ def clear_all_tables(db: Session, confirm: bool = False):
 
     print("🗑️  Clearing all database tables using TRUNCATE...")
 
-    # List of tables to clear. Order matters less with TRUNCATE CASCADE.
-    # "user" table is quoted because USER is an SQL reserved keyword.
+    # Complete list of all tables from models.py ordered by dependencies
+    # Tables with fewer dependencies listed first, those with more dependencies later
+    # TRUNCATE CASCADE should handle most dependency issues, but proper ordering is still good practice
     tables_to_clear = [
-        # File and content related
+        # Link/Junction tables and dependent records (clear first)
         "user_free_api_usage",
-        "gemini_file_cache",
+        "gemini_file_cache", 
         "user_file_access",
+        "mcq_question_tag_link",
+        "mcq_quiz_question_link",
+        "community_member",
+        "community_subject_link", 
         "community_subject_file",
-        # Content interactions
+        
+        # Content interaction tables
         "content_rating",
-        "content_comment",
+        "content_comment", 
         "content_version",
         "content_analytics",
-        # Quiz related
+        "notification",
+        
+        # Session and activity tables
         "quiz_session",
-        "mcq_quiz_question_link",
-        "mcq_question_tag_link",
+        "user_session",
+        
+        # Content tables
+        "summary",
         "mcq_question",
         "mcq_quiz",
-        "question_tag",
-        # Community related
-        "community_member",
-        "community_subject_link",
-        "notification",
-        "community",
-        # Summary and file management
-        "summary",
+        
+        # Core content tables
         "physical_file",
-        # User related
+        "question_tag",
+        
+        # User-related tables
         "user_preference",
         "ai_api_key",
-        "user_session",
-        # Core tables
+        
+        # Community tables
+        "community",
+        
+        # Reference/lookup tables
         "subject",
+        
+        # Core user table (clear last due to many foreign key references)
         '"user"',  # Quoted because USER is a reserved keyword
     ]
 
@@ -74,20 +85,6 @@ def clear_all_tables(db: Session, confirm: bool = False):
         # Using TRUNCATE with RESTART IDENTITY and CASCADE
         # RESTART IDENTITY resets sequences tied to the table's columns (e.g., SERIAL)
         # CASCADE removes dependent rows in other tables
-        # The order of tables in tables_to_clear matters less because of CASCADE,
-        # but it's good practice to list them.
-        # Some tables might be truncated by CASCADE when a parent is truncated.
-
-        # It's often better to truncate in an order that respects dependencies if not using CASCADE,
-        # or to truncate parent tables and let CASCADE handle children.
-        # For robustness, we can iterate through the list. If a table is already
-        # emptied by a previous CASCADE, the command will do nothing or raise a notice.
-
-        # To avoid issues with TRUNCATE order and CASCADE, one common strategy is to
-        # TRUNCATE a specific set of "parent" tables and let CASCADE handle the rest,
-        # or simply TRUNCATE all tables if privileges allow and the database handles
-        # the CASCADE order correctly. PostgreSQL is generally good at this.
-
         for table_name in tables_to_clear:
             try:
                 db.execute(
@@ -95,50 +92,40 @@ def clear_all_tables(db: Session, confirm: bool = False):
                 )
                 print(f"   ✅ Truncated {table_name}")
             except Exception as e:
-                # This might happen if a table was already truncated via CASCADE from another table.
-                # Or if the table doesn't exist, or permission issues persist for specific tables.
+                # This might happen if a table was already truncated via CASCADE from another table
+                # or if the table doesn't exist
                 print(f"   ⚠️  Warning truncating {table_name}: {str(e)}")
 
-        # The explicit sequence reset block below is largely redundant if
-        # TRUNCATE ... RESTART IDENTITY CASCADE handles all relevant sequences tied to table columns.
-        # However, it can be a safeguard for sequences not directly owned by table columns
-        # or if any TRUNCATE command failed to include RESTART IDENTITY for some reason.
-        # You might see "sequence does not exist" or similar warnings if they were handled by TRUNCATE.
-        print(
-            "\n🔄 Resetting sequences (many should have been reset by TRUNCATE RESTART IDENTITY)..."
-        )
+        # Reset sequences for all tables
+        print("\n🔄 Resetting sequences (backup for any missed by TRUNCATE RESTART IDENTITY)...")
         sequences = [
             "user_id_seq",
+            "user_session_id_seq", 
             "ai_api_key_id_seq",
             "subject_id_seq",
             "physical_file_id_seq",
+            "gemini_file_cache_id_seq",
             "summary_id_seq",
             "mcq_question_id_seq",
-            "question_tag_id_seq",
+            "question_tag_id_seq", 
             "mcq_quiz_id_seq",
             "quiz_session_id_seq",
-            "community_id_seq",
-            "notification_id_seq",
             "content_comment_id_seq",
             "content_version_id_seq",
             "content_rating_id_seq",
+            "community_id_seq",
+            "notification_id_seq",
             "user_preference_id_seq",
-            "gemini_file_cache_id_seq",
             "user_free_api_usage_id_seq",
             "community_subject_file_id_seq",
-            # Add other sequences if they are not associated with table identity columns
         ]
 
         for seq in sequences:
             try:
-                # Check if sequence exists before attempting to alter it, to avoid errors for sequences
-                # already handled or non-existent. This requires a query.
-                # For simplicity, we'll let it try and catch the error.
                 db.execute(text(f"ALTER SEQUENCE {seq} RESTART WITH 1"))
                 print(f"   ✅ Reset {seq}")
             except Exception as e:
-                # This error is expected if the sequence is tied to a column and
-                # TRUNCATE ... RESTART IDENTITY already reset it, or if sequence doesn't exist.
+                # Expected if sequence was already reset by TRUNCATE RESTART IDENTITY or doesn't exist
                 print(f"   ⚠️  Note on resetting {seq}: {str(e)}")
 
         db.commit()
@@ -163,51 +150,54 @@ def clear_user_data_only(db: Session, confirm: bool = False):
 
     print("🗑️  Clearing user data only...")
 
-    # For user data, simple DELETE is usually fine, foreign keys should handle cascades
-    # or you delete in dependency order. `session_replication_role` is less likely needed here.
-    # If there are complex dependencies or performance issues, TRUNCATE could be used for these too.
+    # Clear user-generated data but keep system reference data like subjects, question_tag
     tables_to_clear = [
+        # User data and sessions
         "user_free_api_usage",
         "gemini_file_cache",
-        "user_file_access",
-        "quiz_session",
-        # "mcq_quiz_question_link", # Link tables usually cleared by parent cascades
-        # "mcq_question_tag_link",  # Link tables usually cleared by parent cascades
-        "summary",
-        "physical_file",  # Assuming these are user-uploaded and not system files
-        "mcq_question",  # Assuming these are user-created questions
-        "mcq_quiz",  # Assuming these are user-created quizzes
-        "content_comment",
-        "content_rating",
-        "content_version",
-        # "community_member", # Deleting users below might handle this, or clear explicitly
-        # "community_subject_link",
-        # "community_subject_file",
-        "notification",
-        "ai_api_key",
+        "user_file_access", 
         "user_session",
-        # Decide if you want to delete 'users' themselves, or just their data.
-        # The current list does not delete users, communities, or subjects.
+        "ai_api_key",
+        "user_preference",
+        
+        # User-generated content
+        "content_rating",
+        "content_comment",
+        "content_version", 
+        "content_analytics",
+        "notification",
+        
+        # Quiz sessions and user activity
+        "quiz_session",
+        
+        # User-created content
+        "summary",
+        "physical_file",  # User-uploaded files
+        "mcq_question",   # User-created questions
+        "mcq_quiz",       # User-created quizzes
+        
+        # Community data (user-created)
+        "community_member",
+        "community_subject_link",
+        "community_subject_file", 
+        "community",      # User-created communities
+        
+        # Link tables will be cleared when parent records are deleted
+        "mcq_question_tag_link",  # Will be cleared when questions are deleted
+        "mcq_quiz_question_link", # Will be cleared when quizzes are deleted
     ]
 
     try:
-        # Disable foreign key constraints temporarily if using DELETE on many interconnected tables
-        # db.execute(text("SET session_replication_role = replica;"))
-
         for table in tables_to_clear:
             try:
-                # Consider if DELETE or TRUNCATE is more appropriate here.
-                # If TRUNCATE, and these tables have sequences, add RESTART IDENTITY.
                 result = db.execute(text(f"DELETE FROM {table}"))
                 print(f"   ✅ Cleared {table}: {result.rowcount} records deleted")
             except Exception as e:
                 print(f"   ⚠️  Error clearing {table}: {str(e)}")
 
-        # Re-enable foreign key constraints if disabled
-        # db.execute(text("SET session_replication_role = DEFAULT;"))
-
         db.commit()
         print("\n✅ User data cleared successfully!")
+        print("ℹ️  System data preserved: subjects, question_tag, users (but their data is cleared)")
         return True
 
     except Exception as e:
@@ -230,7 +220,6 @@ def clear_test_users(db: Session, confirm: bool = False):
 
     try:
         # Find test users (those with test-like usernames/emails)
-        # Ensure the User model is imported and mapped correctly.
         test_users = (
             db.query(User)
             .filter(
@@ -243,66 +232,67 @@ def clear_test_users(db: Session, confirm: bool = False):
         )
 
         print(f"Found {len(test_users)} test users:")
-        for user_obj in test_users:  # Renamed to avoid conflict with "user" table name
+        for user_obj in test_users:
             print(f"   - {user_obj.username} ({user_obj.email})")
 
         if test_users:
             user_ids = [user_obj.id for user_obj in test_users]
 
-            # Clear related data first. Order from child to parent if not using ON DELETE CASCADE.
-            # This assumes ON DELETE CASCADE is set up for user_id foreign keys.
-            # If not, you'd need to delete from child tables explicitly first.
-
-            # The current script deletes from related tables first, which is safer if CASCADE isn't guaranteed.
-            tables_with_user_id_fk = [  # Tables directly referencing user_id
-                "user_free_api_usage",
-                "user_file_access",
-                "quiz_session",
-                "summary",
-                "mcq_question",
-                "mcq_quiz",
-                "content_comment",
-                "content_rating",
-                "community_member",
-                "notification",
-                "ai_api_key",
-                "user_session",
-                "user_preference",
-                "physical_file",
+            # Complete list of tables with user_id foreign keys or user relationships
+            # Order matters: delete from child tables first to avoid foreign key constraint errors
+            tables_with_user_fk = [
+                # User preference and usage data
+                ("user_free_api_usage", "user_id"),
+                ("user_preference", "user_id"),
+                
+                # File and cache data
+                ("gemini_file_cache", "api_key_id"),  # Indirect via ai_api_key.user_id
+                ("user_file_access", "user_id"),
+                ("user_file_access", "granted_by_user_id"),  # Secondary reference
+                
+                # Content interactions
+                ("content_rating", "user_id"),
+                ("content_comment", "author_id"),
+                ("content_version", "user_id"),
+                
+                # Notifications (both as recipient and actor)
+                ("notification", "user_id"),      # As recipient
+                ("notification", "actor_id"),     # As actor
+                
+                # Quiz and session data
+                ("quiz_session", "user_id"),
+                
+                # User-created content
+                ("summary", "user_id"),
+                ("mcq_question", "user_id"),      # creator
+                ("mcq_quiz", "user_id"),          # creator
+                
+                # Community relationships
+                ("community_member", "user_id"),
+                ("community_subject_link", "added_by_user_id"),
+                ("community_subject_file", "uploaded_by_user_id"),
+                ("community", "creator_id"),      # Communities created by user
+                
+                # File ownership and sessions
+                ("physical_file", "user_id"),     # uploader/owner
+                ("ai_api_key", "user_id"),
+                ("user_session", "user_id"),
             ]
 
-            for table in tables_with_user_id_fk:
-                # Ensure table names are correct, especially if they contain "user"
-                # e.g., user_preference, user_session.
-                # The column name is assumed to be 'user_id'.
-                # If the column name varies, this logic needs adjustment.
-                user_id_column = "user_id"  # Default assumption
-                if (
-                    table == "physical_file"
-                ):  # Example: if physical_file uses uploader_id
-                    pass  # keep user_id or change if different column name for owner
-
+            # Clear related data first
+            for table, user_column in tables_with_user_fk:
                 try:
-                    # Using sqlalchemy.dialects.postgresql.array for ANY is good practice
-                    # For simplicity with `text()`, ensure user_ids is properly formatted if needed
-                    # or pass as parameter.
                     result = db.execute(
-                        text(
-                            f"DELETE FROM {table} WHERE {user_id_column} = ANY(:user_ids_param)"
-                        ),
+                        text(f"DELETE FROM {table} WHERE {user_column} = ANY(:user_ids_param)"),
                         {"user_ids_param": user_ids},
                     )
                     if result.rowcount > 0:
-                        print(
-                            f"   ✅ Cleared {result.rowcount} records from {table} for test users"
-                        )
+                        print(f"   ✅ Cleared {result.rowcount} records from {table} ({user_column}) for test users")
                 except Exception as e:
-                    print(f"   ⚠️  Error clearing {table} for test users: {str(e)}")
+                    print(f"   ⚠️  Error clearing {table} ({user_column}) for test users: {str(e)}")
 
-            # Finally delete the users from the "user" table (quoted)
+            # Finally delete the test users themselves
             try:
-                # Ensure your User model maps to "user" table correctly.
-                # The table name must be quoted if it's 'user'.
                 result = db.execute(
                     text('DELETE FROM "user" WHERE id = ANY(:user_ids_param)'),
                     {"user_ids_param": user_ids},
@@ -391,6 +381,22 @@ def main():
         print("🧹 Database & Cache Cleanup Utility")
         print("=" * 35)
         parser.print_help()
+        
+        print("\n📋 Tables in Database (from models.py):")
+        all_tables = [
+            "user", "user_session", "ai_api_key", "subject", "physical_file",
+            "gemini_file_cache", "user_file_access", "summary", "mcq_question_tag_link",
+            "mcq_question", "question_tag", "mcq_quiz_question_link", "mcq_quiz",
+            "quiz_session", "content_comment", "content_version", "content_analytics",
+            "community", "community_member", "community_subject_link", 
+            "community_subject_file", "notification", "content_rating",
+            "user_preference", "user_free_api_usage"
+        ]
+        
+        for i, table in enumerate(all_tables, 1):
+            print(f"   {i:2d}. {table}")
+        
+        print(f"\nTotal: {len(all_tables)} tables")
         print("\nExample: python scripts/clear_db.py --test-users --cache --yes")
         return
 

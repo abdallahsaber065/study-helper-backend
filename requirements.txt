@@ -1,5 +1,5 @@
 fastapi
-uvicorn
+uvicorn[standard]
 gunicorn
 pydantic
 pydantic-settings
@@ -26,3 +26,4 @@ aiofiles
 structlog
 python-json-logger
 psutil
+uvloop  # For better async performance on Linux/Mac

@@ -55,6 +55,29 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
     debug: bool = False
     
+    # Logging settings
+    log_level: str = "INFO"
+    log_format: str = "json"  # json or text
+    enable_request_logging: bool = True
+    enable_sql_logging: bool = False
+    
+    # Security settings
+    enable_security_headers: bool = True
+    enable_rate_limiting: bool = True
+    enable_request_size_limit: bool = True
+    max_request_size_bytes: int = 50 * 1024 * 1024  # 50MB
+    request_timeout_seconds: int = 300  # 5 minutes
+    
+    # Monitoring settings
+    enable_health_checks: bool = True
+    enable_metrics: bool = True
+    health_check_timeout: int = 30
+    
+    # Background task settings
+    enable_background_tasks: bool = True
+    task_cleanup_interval_minutes: int = 60
+    task_retention_days: int = 7
+    
     @property
     def database_url(self) -> str:
         """Construct database URL from individual components."""

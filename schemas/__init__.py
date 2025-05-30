@@ -23,6 +23,8 @@ from .comment import *
 from .rating import *
 from .notification import *
 from .preference import *
+from .versioning import *
+from .analytics import *
 
 __all__ = [
     "UserCreate", "UserRead", "UserUpdate", "UserSession",

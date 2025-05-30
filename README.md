@@ -6,7 +6,7 @@ A FastAPI-based backend application for the Study Helper project, featuring AI-p
 
 ### Phase 3: File Handling & AI Integration
 
-- ✅ File upload and management (PDF, TXT, DOCX, DOC)
+- ✅ File upload and management
 - ✅ AI-powered summary generation from multiple files
 - ✅ File access control and sharing between users
 - ✅ AI file caching for efficiency (Gemini File API integration)

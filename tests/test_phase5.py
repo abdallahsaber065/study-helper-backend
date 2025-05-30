@@ -164,7 +164,7 @@ def test_community_features():
             print(f"   ✅ Created subject: {subject['name']}")
         else:
             # Subject might already exist, try to find it
-            response = client.get(f"/communities/subjects?search={subject_data['name']}")
+            response = client.get(f"/communities/subjects?search={subject_data['name']}", headers=admin_headers)
             if response.status_code == 200:
                 subjects = response.json()
                 if subjects:

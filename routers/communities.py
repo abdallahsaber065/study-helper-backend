@@ -67,6 +67,61 @@ def _convert_file_to_read(community_file) -> CommunitySubjectFileRead:
 
 # ============ Community Management ============
 
+# ============ Subject CRUD (Global) ============
+
+@router.post("/subjects", response_model=SubjectRead, status_code=status.HTTP_201_CREATED)
+async def create_subject(
+    subject: SubjectCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Create a new subject (global)."""
+    # Check if subject already exists
+    existing_subject = db.query(Subject).filter(Subject.name == subject.name).first()
+    if existing_subject:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Subject with this name already exists"
+        )
+    
+    db_subject = Subject(**subject.dict())
+    db.add(db_subject)
+    db.commit()
+    db.refresh(db_subject)
+    
+    return SubjectRead.from_orm(db_subject)
+
+
+@router.get("/subjects", response_model=List[SubjectRead])
+async def list_subjects(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=100),
+    search: Optional[str] = Query(None),
+    db: Session = Depends(get_db)
+):
+    """List all subjects."""
+    query = db.query(Subject)
+    
+    if search:
+        query = query.filter(Subject.name.ilike(f"%{search}%"))
+    
+    subjects = query.offset(skip).limit(limit).all()
+    return [SubjectRead.from_orm(subject) for subject in subjects]
+
+
+@router.get("/subjects/{subject_id}", response_model=SubjectRead)
+async def get_subject(
+    subject_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get a specific subject."""
+    subject = db.query(Subject).filter(Subject.id == subject_id).first()
+    if not subject:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subject not found")
+    
+    return SubjectRead.from_orm(subject)
+
+
 @router.post("", response_model=CommunityRead, status_code=status.HTTP_201_CREATED)
 async def create_community(
     community: CommunityCreate,
@@ -338,59 +393,4 @@ async def get_community_stats(
     service = CommunityService(db)
     stats = service.get_community_stats(community_id, current_user)
     
-    return CommunityStats(**stats)
-
-
-# ============ Subject CRUD (Global) ============
-
-@router.post("/subjects", response_model=SubjectRead, status_code=status.HTTP_201_CREATED)
-async def create_subject(
-    subject: SubjectCreate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Create a new subject (global)."""
-    # Check if subject already exists
-    existing_subject = db.query(Subject).filter(Subject.name == subject.name).first()
-    if existing_subject:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Subject with this name already exists"
-        )
-    
-    db_subject = Subject(**subject.dict())
-    db.add(db_subject)
-    db.commit()
-    db.refresh(db_subject)
-    
-    return SubjectRead.from_orm(db_subject)
-
-
-@router.get("/subjects", response_model=List[SubjectRead])
-async def list_subjects(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=100),
-    search: Optional[str] = Query(None),
-    db: Session = Depends(get_db)
-):
-    """List all subjects."""
-    query = db.query(Subject)
-    
-    if search:
-        query = query.filter(Subject.name.ilike(f"%{search}%"))
-    
-    subjects = query.offset(skip).limit(limit).all()
-    return [SubjectRead.from_orm(subject) for subject in subjects]
-
-
-@router.get("/subjects/{subject_id}", response_model=SubjectRead)
-async def get_subject(
-    subject_id: int,
-    db: Session = Depends(get_db)
-):
-    """Get a specific subject."""
-    subject = db.query(Subject).filter(Subject.id == subject_id).first()
-    if not subject:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subject not found")
-    
-    return SubjectRead.from_orm(subject) 
+    return CommunityStats(**stats) 

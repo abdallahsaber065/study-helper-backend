@@ -2,7 +2,7 @@
 AI cache-related Pydantic schemas for request/response validation.
 """
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 from pydantic import BaseModel, Field
 
 
@@ -33,7 +33,6 @@ class GeminiFileCacheRead(GeminiFileCacheBase):
 
 class AiApiKeyBase(BaseModel):
     """Base schema for AI API keys."""
-    user_id: int = Field(..., description="ID of the user who owns the API key")
     provider_name: str = Field(..., description="Name of the AI provider (e.g., OpenAI, Google)")
     is_active: bool = Field(default=True, description="Whether the API key is active")
 
@@ -43,9 +42,17 @@ class AiApiKeyCreate(AiApiKeyBase):
     api_key: str = Field(..., description="The actual API key (will be encrypted)")
 
 
+class AiApiKeyUpdate(BaseModel):
+    """Schema for updating an AI API key."""
+    api_key: Optional[str] = Field(None, description="The actual API key (will be encrypted)")
+    provider_name: Optional[str] = Field(None, description="Name of the AI provider (e.g., OpenAI, Google)")
+    is_active: Optional[bool] = Field(None, description="Whether the API key is active")
+
+
 class AiApiKeyRead(AiApiKeyBase):
     """Schema for reading AI API key data."""
     id: int
+    user_id: int
     created_at: datetime
     updated_at: datetime
     last_used_at: Optional[datetime] = None
@@ -71,4 +78,22 @@ class UserApiUsageSummary(BaseModel):
     """Summary of user's API usage for all providers."""
     gemini: Optional[UserFreeApiUsageRead] = Field(None, description="Gemini API usage")
     openai: Optional[UserFreeApiUsageRead] = Field(None, description="OpenAI API usage")
-    has_own_keys: bool = Field(False, description="Whether the user has their own API keys") 
+    has_own_keys: bool = Field(False, description="Whether the user has their own API keys")
+
+
+class AiApiKeyList(BaseModel):
+    """List of AI API keys."""
+    items: List[AiApiKeyRead]
+    total: int = Field(..., description="Total number of API keys")
+
+
+class AiApiKeyTestRequest(BaseModel):
+    """Schema for testing an AI API key."""
+    api_key: str = Field(..., description="The API key to test")
+    provider_name: str = Field(..., description="Name of the AI provider to test with")
+
+
+class AiApiKeyTestResponse(BaseModel):
+    """Schema for API key test response."""
+    is_valid: bool = Field(..., description="Whether the API key is valid")
+    message: str = Field(..., description="Status message") 

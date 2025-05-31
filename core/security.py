@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from core.config import settings
 from core.logging import get_logger, security_logger
 from db_config import get_db
-from models.models import User, UserRoleEnum
+from models.models import User, UserRoleEnum, UserSession
 from cryptography.fernet import Fernet
 import base64
 
@@ -94,6 +94,40 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
         raise
 
 
+def create_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    """
+    Create a general purpose JWT token (for password reset, account activation, etc.).
+    
+    Args:
+        data: The data to encode in the token
+        expires_delta: Optional custom expiration time
+        
+    Returns:
+        str: The encoded JWT token
+    """
+    try:
+        to_encode = data.copy()
+        if expires_delta:
+            expire = datetime.now(timezone.utc) + expires_delta
+        else:
+            expire = datetime.now(timezone.utc) + timedelta(hours=24)  # Default 24 hours
+        
+        to_encode.update({"exp": expire, "iat": datetime.now(timezone.utc)})
+        encoded_jwt = jwt.encode(to_encode, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+        
+        logger.info("Token created", 
+                   username=data.get("sub"),
+                   type=data.get("type", "unknown"),
+                   expires_at=expire.isoformat())
+        return encoded_jwt
+    except Exception as e:
+        logger.error("Token creation error", 
+                    error=str(e), 
+                    username=data.get("sub"),
+                    type=data.get("type", "unknown"))
+        raise
+
+
 def verify_token(token: str) -> Optional[dict]:
     """
     Verify and decode a JWT token.
@@ -116,22 +150,19 @@ def verify_token(token: str) -> Optional[dict]:
         return None
 
 
-async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: Session = Depends(get_db)
-) -> User:
+async def get_current_user(token: HTTPAuthorizationCredentials = Depends(security), db: Session = Depends(get_db)) -> User:
     """
-    Dependency to get the current authenticated user from JWT token.
+    Get the current user from the JWT token.
     
     Args:
-        credentials: The HTTP authorization credentials
+        token: The JWT token from the Authorization header
         db: Database session
         
     Returns:
-        User: The authenticated user
+        User: The current user if authentication is successful
         
     Raises:
-        HTTPException: If token is invalid or user not found
+        HTTPException: If authentication fails
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -140,35 +171,42 @@ async def get_current_user(
     )
     
     try:
-        token = credentials.credentials
-        payload = verify_token(token)
-        
-        if payload is None:
-            logger.warning("Invalid token provided")
-            raise credentials_exception
-        
-        username: str = payload.get("sub")
+        # Verify the token
+        payload = jwt.decode(token.credentials, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
+        username = payload.get("sub")
         if username is None:
-            logger.warning("Token missing username")
+            logger.warning("Token missing username claim")
             raise credentials_exception
         
+        # Find the user
         user = db.query(User).filter(User.username == username).first()
         if user is None:
-            logger.warning("User not found", username=username)
+            logger.warning("User not found for token", username=username)
             raise credentials_exception
         
-        if not user.is_active:
-            logger.warning("Inactive user attempted access", username=username, user_id=user.id)
+        # Get the token from the Authorization header
+        token_value = token.credentials
+
+        # Check if session is still valid
+        session = db.query(UserSession).filter(
+            UserSession.user_id == user.id,
+            UserSession.session_token == token_value,  # Check the specific token
+            (UserSession.expires_at > datetime.now(timezone.utc)) | (UserSession.expires_at.is_(None))  # Check if not expired
+        ).first()
+
+        if not session:
+            logger.warning("No valid session found", username=username, user_id=user.id)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Inactive user"
+                detail="Session expired or invalidated. Please log in again.",
+                headers={"WWW-Authenticate": "Bearer"},
             )
         
-        logger.debug("User authenticated successfully", username=username, user_id=user.id)
         return user
         
-    except HTTPException:
-        raise
+    except JWTError as e:
+        logger.warning("JWT verification failed", error=str(e))
+        raise credentials_exception
     except Exception as e:
         logger.error("Authentication error", error=str(e))
         raise credentials_exception
@@ -176,49 +214,44 @@ async def get_current_user(
 
 async def get_current_active_user(current_user: User = Depends(get_current_user)) -> User:
     """
-    Dependency to ensure the current user is active.
+    Check if the current user is active.
     
     Args:
         current_user: The current authenticated user
         
     Returns:
-        User: The active user
+        User: The current user if active
         
     Raises:
-        HTTPException: If user is inactive
+        HTTPException: If user is not active
     """
     if not current_user.is_active:
-        logger.warning("Inactive user access denied", username=current_user.username, user_id=current_user.id)
-        raise HTTPException(status_code=400, detail="Inactive user")
+        logger.warning("Inactive user attempted access", 
+                      username=current_user.username, 
+                      user_id=current_user.id)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Inactive user")
     return current_user
 
 
 async def get_current_admin_user(current_user: User = Depends(get_current_active_user)) -> User:
     """
-    Get the current user, but verify they have admin privileges.
+    Check if the current user is an admin.
     
     Args:
         current_user: The current authenticated user
         
     Returns:
-        The current user if they have admin privileges
+        User: The current user if admin
         
     Raises:
-        HTTPException: If the user is not an admin
+        HTTPException: If user is not an admin
     """
     if current_user.role != UserRoleEnum.admin:
-        logger.warning("Non-admin user attempted admin access", 
+        logger.warning("Non-admin user attempted admin action", 
                       username=current_user.username, 
-                      user_id=current_user.id, 
+                      user_id=current_user.id,
                       role=current_user.role.value)
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="The user doesn't have admin privileges"
-        )
-    
-    logger.info("Admin user access granted", 
-               username=current_user.username, 
-               user_id=current_user.id)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin privileges required")
     return current_user
 
 

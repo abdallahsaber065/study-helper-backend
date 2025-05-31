@@ -13,7 +13,7 @@ from core.middleware import setup_middleware
 from routers import (
     auth, users, files, summaries, mcqs, communities, 
     interactions, notifications, preferences, versioning, 
-    analytics, background_tasks, health
+    analytics, background_tasks, health, api_keys
 )
 
 # Initialize logging system early
@@ -67,6 +67,7 @@ app.include_router(versioning.router)
 app.include_router(analytics.router)
 app.include_router(background_tasks.router)
 app.include_router(health.router)  # Add health check router
+app.include_router(api_keys.router)  # Add API key management router
 
 
 # Enhanced health check endpoint (keep the simple one for backwards compatibility)

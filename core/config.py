@@ -59,11 +59,25 @@ class Settings(BaseSettings):
     default_free_user_username: Optional[str] = None
     default_free_user_email: Optional[str] = None
     default_free_user_password: Optional[str] = None
-    force_reset_password_free: bool = True
+    force_reset_password_free: bool = False
+    
+
+    # Email settings
+    smtp_server: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""  # App password for Gmail
+    smtp_sender_email: str = ""
+    support_email: str = ""
+    frontend_url: str = "http://localhost:3000"
+    
+    # Token expiration settings
+    activation_token_expire_hours: int = 24
+    password_reset_token_expire_hours: int = 1
     
     # Application settings
-    app_name: str = "Study Helper Backend API"
-    app_version: str = "0.1.0"
+    app_name: str = "Study Helper"
+    app_version: str = "1.0.0"
     debug: bool = False
     
     # Logging settings
@@ -122,3 +136,6 @@ settings = Settings()
 
 # Gemini AI Configuration Constants (using settings values)
 GEMINI_MODEL = settings.gemini_model
+
+# Create upload directory if it doesn't exist
+os.makedirs(settings.upload_directory, exist_ok=True)

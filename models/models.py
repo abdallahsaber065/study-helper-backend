@@ -21,6 +21,7 @@ class DifficultyLevelEnum(enum.Enum):
     Easy = "Easy"
     Medium = "Medium"
     Hard = "Hard"
+    Mix = "Mix"
 
 class AiProviderEnum(enum.Enum):
     OpenAI = "OpenAI"

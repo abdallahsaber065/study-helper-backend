@@ -2,7 +2,7 @@
 Authentication routes for user registration, login, and user management.
 """
 from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from fastapi.security import HTTPBearer
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
@@ -12,14 +12,27 @@ from core.security import (
     verify_password, 
     create_access_token,
     get_current_user,
-    get_current_active_user
+    get_current_active_user,
+    create_token,
+    verify_token
 )
 from core.config import settings
 from core.logging import get_logger
 from db_config import get_db
 from models.models import User, UserSession, UserRoleEnum
 from schemas.user import UserCreate, UserRead, UserUpdate
-from schemas.auth import LoginRequest, LoginResponse, RegisterResponse, Token
+from schemas.auth import (
+    LoginRequest, 
+    LoginResponse, 
+    RegisterResponse, 
+    Token,
+    PasswordResetRequest,
+    PasswordResetConfirm,
+    PasswordResetResponse,
+    ActivationRequest,
+    ActivationResponse
+)
+from services.email_service import EmailService
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 security = HTTPBearer()
@@ -29,7 +42,11 @@ logger = get_logger("auth")
 
 
 @router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
-async def register_user(user_data: UserCreate, db: Session = Depends(get_db)):
+async def register_user(
+    user_data: UserCreate, 
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
     """
     Register a new user.
     
@@ -82,6 +99,21 @@ async def register_user(user_data: UserCreate, db: Session = Depends(get_db)):
                    user_id=db_user.id, 
                    email=db_user.email)
         
+        # Generate activation token
+        activation_token = create_token(
+            data={"sub": db_user.username, "type": "activation"},
+            expires_delta=timedelta(hours=settings.activation_token_expire_hours)
+        )
+        
+        # Send activation email in background
+        email_service = EmailService()
+        background_tasks.add_task(
+            email_service.send_activation_email,
+            to_email=db_user.email,
+            username=db_user.username,
+            token=activation_token
+        )
+        
         # Return user data without sensitive information
         user_dict = {
             "id": db_user.id,
@@ -96,7 +128,7 @@ async def register_user(user_data: UserCreate, db: Session = Depends(get_db)):
         }
         
         return RegisterResponse(
-            message="User registered successfully",
+            message="User registered successfully. Please check your email to activate your account.",
             user=user_dict
         )
     
@@ -293,4 +325,187 @@ async def refresh_token(current_user: User = Depends(get_current_user), db: Sess
         access_token=access_token,
         token_type="bearer",
         expires_in=settings.jwt_access_token_expire_minutes * 60
+    )
+
+
+@router.post("/password-reset", response_model=PasswordResetResponse)
+async def request_password_reset(
+    reset_request: PasswordResetRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """
+    Request a password reset email.
+    
+    - **email**: Email address associated with the account
+    """
+    logger.info("Password reset requested", email=reset_request.email)
+    
+    # Find user by email
+    user = db.query(User).filter(User.email == reset_request.email).first()
+    
+    # Always return success even if email not found (to prevent email enumeration)
+    if not user:
+        logger.warning("Password reset requested for nonexistent email", email=reset_request.email)
+        return PasswordResetResponse(
+            message="If your email is registered, a password reset link has been sent."
+        )
+    
+    # Generate password reset token
+    reset_token = create_token(
+        data={"sub": user.username, "type": "password_reset"},
+        expires_delta=timedelta(hours=settings.password_reset_token_expire_hours)
+    )
+    
+    # Send password reset email in background
+    email_service = EmailService()
+    background_tasks.add_task(
+        email_service.send_password_reset_email,
+        to_email=user.email,
+        username=user.username,
+        token=reset_token
+    )
+    
+    logger.info("Password reset email sent", username=user.username, user_id=user.id)
+    
+    return PasswordResetResponse(
+        message="If your email is registered, a password reset link has been sent."
+    )
+
+
+@router.post("/password-reset/confirm", response_model=PasswordResetResponse)
+async def confirm_password_reset(
+    reset_confirm: PasswordResetConfirm,
+    db: Session = Depends(get_db)
+):
+    """
+    Reset password using a token from the reset email.
+    
+    - **token**: Password reset token
+    - **new_password**: New password (minimum 8 characters)
+    """
+    # Verify the token
+    token_data = verify_token(reset_confirm.token)
+    
+    if not token_data or token_data.get("type") != "password_reset":
+        logger.warning("Invalid password reset token")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired token"
+        )
+    
+    # Get the username from the token
+    username = token_data.get("sub")
+    if not username:
+        logger.error("Token missing username claim")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid token format"
+        )
+    
+    # Find the user
+    user = db.query(User).filter(User.username == username).first()
+    if not user:
+        logger.error("User not found for password reset", username=username)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Hash the new password
+    new_password_hash = get_password_hash(reset_confirm.new_password)
+    
+    # Update the password
+    user.password_hash = new_password_hash
+    user.updated_at = datetime.now(timezone.utc)
+    
+    # Invalidate all sessions (force logout on all devices)
+    sessions = db.query(UserSession).filter(UserSession.user_id == user.id).all()
+    for session in sessions:
+        db.delete(session)
+    
+    db.commit()
+    
+    logger.info("Password reset successful", username=user.username, user_id=user.id)
+    
+    return PasswordResetResponse(
+        message="Password has been reset successfully. Please log in with your new password."
+    )
+
+
+@router.post("/activate", response_model=ActivationResponse)
+async def activate_account(
+    activation_request: ActivationRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """
+    Activate a user account using the token sent via email.
+    
+    - **token**: Account activation token
+    """
+    # Verify the token
+    token_data = verify_token(activation_request.token)
+    
+    if not token_data or token_data.get("type") != "activation":
+        logger.warning("Invalid activation token")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired token"
+        )
+    
+    # Get the username from the token
+    username = token_data.get("sub")
+    if not username:
+        logger.error("Token missing username claim")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid token format"
+        )
+    
+    # Find the user
+    user = db.query(User).filter(User.username == username).first()
+    if not user:
+        logger.error("User not found for activation", username=username)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Check if already verified
+    if user.is_verified:
+        logger.info("Account already verified", username=user.username, user_id=user.id)
+        return ActivationResponse(
+            message="Your account is already activated.",
+            user={
+                "id": user.id,
+                "username": user.username,
+                "email": user.email,
+                "is_verified": user.is_verified
+            }
+        )
+    
+    # Activate the account
+    user.is_verified = True
+    user.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    
+    logger.info("Account activated successfully", username=user.username, user_id=user.id)
+    
+    # Send welcome email in background
+    email_service = EmailService()
+    background_tasks.add_task(
+        email_service.send_welcome_email,
+        to_email=user.email,
+        username=user.username
+    )
+    
+    return ActivationResponse(
+        message="Your account has been activated successfully. You can now log in.",
+        user={
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "is_verified": user.is_verified
+        }
     )

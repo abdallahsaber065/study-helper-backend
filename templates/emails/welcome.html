@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Welcome to {{ app_name }}</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            margin: 0;
+            padding: 0;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .header {
+            background-color: #4a6ee0;
+            color: white;
+            padding: 20px;
+            text-align: center;
+        }
+        .content {
+            padding: 20px;
+            background-color: #f9f9f9;
+        }
+        .button {
+            display: inline-block;
+            background-color: #4a6ee0;
+            color: white;
+            text-decoration: none;
+            padding: 12px 24px;
+            border-radius: 4px;
+            margin: 20px 0;
+            font-weight: bold;
+        }
+        .footer {
+            font-size: 12px;
+            text-align: center;
+            color: #777;
+            padding: 20px;
+        }
+        .feature {
+            margin: 15px 0;
+            padding: 10px;
+            background-color: #fff;
+            border-radius: 4px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .feature h3 {
+            margin-top: 0;
+            color: #4a6ee0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Welcome to {{ app_name }}</h1>
+        </div>
+        <div class="content">
+            <p>Hello {{ username }},</p>
+            
+            <p>Thank you for joining {{ app_name }}! Your account is now active and ready to use.</p>
+            
+            <p>With {{ app_name }}, you can:</p>
+            
+            <div class="feature">
+                <h3>Upload & Manage Study Materials</h3>
+                <p>Upload your lecture notes, textbooks, and study materials for easy access and organization.</p>
+            </div>
+            
+            <div class="feature">
+                <h3>Generate AI Summaries</h3>
+                <p>Get concise summaries of your study materials using our AI-powered tools.</p>
+            </div>
+            
+            <div class="feature">
+                <h3>Create Quizzes & Practice Tests</h3>
+                <p>Test your knowledge with automatically generated quizzes or create your own.</p>
+            </div>
+            
+            <div class="feature">
+                <h3>Collaborate with Others</h3>
+                <p>Join communities, share resources, and learn together with other students.</p>
+            </div>
+            
+            <p style="text-align: center;">
+                <a href="{{ login_url }}" class="button">Login to Your Account</a>
+            </p>
+            
+            <p>We're excited to have you on board and help you succeed in your studies!</p>
+            
+            <p>Best regards,<br>The {{ app_name }} Team</p>
+        </div>
+        <div class="footer">
+            <p>If you have any questions, please contact us at <a href="mailto:{{ support_email }}">{{ support_email }}</a>.</p>
+            <p>&copy; {{ app_name }}. All rights reserved.</p>
+        </div>
+    </div>
+</body>
+</html> 

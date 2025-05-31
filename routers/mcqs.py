@@ -475,7 +475,7 @@ async def update_quiz(
         if quiz.community_id:
             community_service = CommunityService(db)
             try:
-                community_service._check_admin_or_moderator(current_user, quiz.community_id)
+                community_service._check_admin_or_moderator(quiz.community_id, current_user.id)
             except HTTPException:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
@@ -487,40 +487,93 @@ async def update_quiz(
                 detail="Not authorized to update this quiz"
             )
     
-    # Update quiz fields
+    # Update basic fields
     update_data = quiz_update.dict(exclude_unset=True, exclude={"question_ids"})
     for field, value in update_data.items():
         setattr(quiz, field, value)
     
     quiz.updated_at = datetime.now(timezone.utc)
     
-    # Update question links if provided
+    # Update quiz questions if provided
     if quiz_update.question_ids is not None:
-        # Remove existing question links
+        # Delete existing question links
         db.query(McqQuizQuestionLink).filter(McqQuizQuestionLink.quiz_id == quiz_id).delete()
         
         # Add new question links
-        for idx, question_id in enumerate(quiz_update.question_ids):
+        for i, question_id in enumerate(quiz_update.question_ids):
+            # Verify question exists
             question = db.query(McqQuestion).filter(McqQuestion.id == question_id).first()
-            if question:
-                quiz_link = McqQuizQuestionLink(
-                    quiz_id=quiz_id,
-                    question_id=question_id,
-                    display_order=idx + 1
+            if not question:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Question with ID {question_id} not found"
                 )
-                db.add(quiz_link)
+            
+            # Add question link with order
+            link = McqQuizQuestionLink(
+                quiz_id=quiz_id,
+                question_id=question_id,
+                question_order=i
+            )
+            db.add(link)
     
     db.commit()
     db.refresh(quiz)
     
-    # Add question count
-    question_count = db.query(McqQuizQuestionLink).filter(
-        McqQuizQuestionLink.quiz_id == quiz.id
-    ).count()
+    # Update quiz question count
+    question_count = db.query(McqQuizQuestionLink).filter(McqQuizQuestionLink.quiz_id == quiz_id).count()
+    quiz.question_count = question_count
+    db.commit()
     
-    result = McqQuizRead.from_orm(quiz)
-    result.question_count = question_count
-    return result
+    return quiz
+
+
+@router.delete("/quizzes/{quiz_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_quiz(
+    quiz_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Delete a quiz."""
+    quiz = db.query(McqQuiz).filter(McqQuiz.id == quiz_id).first()
+    if not quiz:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiz not found")
+    
+    # Check ownership or admin rights
+    if quiz.user_id != current_user.id and current_user.role.value != "admin":
+        # If it's a community quiz, check if user is admin/moderator
+        if quiz.community_id:
+            community_service = CommunityService(db)
+            try:
+                community_service._check_admin_or_moderator(quiz.community_id, current_user.id)
+            except HTTPException:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not authorized to delete this quiz"
+                )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to delete this quiz"
+            )
+    
+    # First delete all quiz-question links
+    db.query(McqQuizQuestionLink).filter(McqQuizQuestionLink.quiz_id == quiz_id).delete()
+    
+    # Check if there are any active sessions for this quiz
+    active_sessions = db.query(QuizSession).filter(
+        QuizSession.quiz_id == quiz_id,
+        QuizSession.completed_at == None
+    ).all()
+    
+    # Delete sessions if any exist
+    if active_sessions:
+        for session in active_sessions:
+            db.delete(session)
+    
+    # Finally delete the quiz
+    db.delete(quiz)
+    db.commit()
 
 
 # ============ Quiz Session Management ============

@@ -457,6 +457,72 @@ async def get_quiz(
     return result
 
 
+@router.put("/quizzes/{quiz_id}", response_model=McqQuizRead)
+async def update_quiz(
+    quiz_id: int,
+    quiz_update: McqQuizUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update a quiz."""
+    quiz = db.query(McqQuiz).filter(McqQuiz.id == quiz_id).first()
+    if not quiz:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiz not found")
+    
+    # Check ownership or admin rights
+    if quiz.user_id != current_user.id and current_user.role.value != "admin":
+        # If it's a community quiz, check if user is admin/moderator
+        if quiz.community_id:
+            community_service = CommunityService(db)
+            try:
+                community_service._check_admin_or_moderator(current_user, quiz.community_id)
+            except HTTPException:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not authorized to update this quiz"
+                )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to update this quiz"
+            )
+    
+    # Update quiz fields
+    update_data = quiz_update.dict(exclude_unset=True, exclude={"question_ids"})
+    for field, value in update_data.items():
+        setattr(quiz, field, value)
+    
+    quiz.updated_at = datetime.now(timezone.utc)
+    
+    # Update question links if provided
+    if quiz_update.question_ids is not None:
+        # Remove existing question links
+        db.query(McqQuizQuestionLink).filter(McqQuizQuestionLink.quiz_id == quiz_id).delete()
+        
+        # Add new question links
+        for idx, question_id in enumerate(quiz_update.question_ids):
+            question = db.query(McqQuestion).filter(McqQuestion.id == question_id).first()
+            if question:
+                quiz_link = McqQuizQuestionLink(
+                    quiz_id=quiz_id,
+                    question_id=question_id,
+                    display_order=idx + 1
+                )
+                db.add(quiz_link)
+    
+    db.commit()
+    db.refresh(quiz)
+    
+    # Add question count
+    question_count = db.query(McqQuizQuestionLink).filter(
+        McqQuizQuestionLink.quiz_id == quiz.id
+    ).count()
+    
+    result = McqQuizRead.from_orm(quiz)
+    result.question_count = question_count
+    return result
+
+
 # ============ Quiz Session Management ============
 
 @router.post("/quizzes/{quiz_id}/sessions", response_model=QuizSessionRead, status_code=status.HTTP_201_CREATED)
@@ -611,4 +677,77 @@ async def list_my_quiz_sessions(
         QuizSession.user_id == current_user.id
     ).order_by(QuizSession.started_at.desc()).offset(skip).limit(limit).all()
     
-    return sessions 
+    return sessions
+
+
+@router.put("/sessions/{session_id}", response_model=QuizSessionRead)
+async def update_quiz_session(
+    session_id: int,
+    submission: QuizSessionSubmit,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Edit a quiz session's answers."""
+    session = db.query(QuizSession).filter(QuizSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiz session not found")
+    
+    # Check ownership
+    if session.user_id != current_user.id and current_user.role.value != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied to this quiz session"
+        )
+    
+    # Calculate new score
+    correct_answers = 0
+    answer_details = {}
+    
+    for answer in submission.answers:
+        question = db.query(McqQuestion).filter(McqQuestion.id == answer.question_id).first()
+        if question:
+            is_correct = question.correct_option == answer.selected_option.value
+            if is_correct:
+                correct_answers += 1
+            
+            answer_details[str(answer.question_id)] = {
+                "selected": answer.selected_option.value,
+                "correct": question.correct_option,
+                "is_correct": is_correct
+            }
+    
+    # Update session
+    session.score = correct_answers
+    session.answers_json = answer_details
+    
+    # If session wasn't completed yet, mark it as completed now
+    if not session.completed_at:
+        session.completed_at = datetime.now(timezone.utc)
+        session.time_taken_seconds = int((session.completed_at - session.started_at).total_seconds())
+    
+    db.commit()
+    db.refresh(session)
+    
+    return session
+
+
+@router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_quiz_session(
+    session_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Delete a quiz session."""
+    session = db.query(QuizSession).filter(QuizSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiz session not found")
+    
+    # Check ownership or admin rights
+    if session.user_id != current_user.id and current_user.role.value != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to delete this quiz session"
+        )
+    
+    db.delete(session)
+    db.commit() 

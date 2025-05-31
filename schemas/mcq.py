@@ -104,6 +104,7 @@ class McqQuizUpdate(BaseModel):
     is_public: Optional[bool] = None
     subject_id: Optional[int] = None
     community_id: Optional[int] = None
+    question_ids: Optional[List[int]] = None
 
 
 class McqQuizRead(McqQuizBase):

@@ -11,9 +11,9 @@ from core.middleware import setup_middleware
 
 # Import routers
 from routers import (
-    auth, users, files, summaries, mcqs, communities, 
+    auth, quizzes, users, files, summaries, mcqs, communities, 
     interactions, notifications, preferences, versioning, 
-    analytics, background_tasks, health, api_keys
+    analytics, background_tasks, health, api_keys,tags
 )
 
 # Initialize logging system early
@@ -58,6 +58,8 @@ app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(files.router)
 app.include_router(summaries.router)
+app.include_router(quizzes.router)
+app.include_router(tags.router)
 app.include_router(mcqs.router)
 app.include_router(communities.router)
 app.include_router(interactions.router)
@@ -66,8 +68,9 @@ app.include_router(preferences.router)
 app.include_router(versioning.router)
 app.include_router(analytics.router)
 app.include_router(background_tasks.router)
-app.include_router(health.router)  # Add health check router
-app.include_router(api_keys.router)  # Add API key management router
+app.include_router(health.router)
+app.include_router(api_keys.router)
+
 
 
 # Enhanced health check endpoint (keep the simple one for backwards compatibility)

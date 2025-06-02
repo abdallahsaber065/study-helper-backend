@@ -4,7 +4,7 @@ Pydantic schemas for MCQ and Quiz functionality.
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
-from models.models import DifficultyLevelEnum
+from models.models import DifficultyLevelEnum, McqQuestion
 import enum
 
 
@@ -194,3 +194,24 @@ class MCQGenerationRequest(BaseModel):
     quiz_title: Optional[str] = None
     quiz_description: Optional[str] = None
     community_id: Optional[int] = Field(None, description="Community ID to associate quiz with") 
+
+def _convert_question_to_read(question: McqQuestion) -> McqQuestionRead:
+    """Convert a question with its tag links to McqQuestionRead format."""
+    question_dict = {
+        "id": question.id,
+        "question_text": question.question_text,
+        "option_a": question.option_a,
+        "option_b": question.option_b,
+        "option_c": question.option_c,
+        "option_d": question.option_d,
+        "correct_option": question.correct_option,
+        "explanation": question.explanation,
+        "hint": question.hint,
+        "difficulty_level": question.difficulty_level,
+        "user_id": question.user_id,
+        "created_at": question.created_at,
+        "updated_at": question.updated_at,
+        "tags": [QuestionTagRead.from_orm(link.tag) for link in question.tag_links] if hasattr(question, 'tag_links') else []
+    }
+    return McqQuestionRead(**question_dict)
+

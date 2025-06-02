@@ -1,8 +1,8 @@
-"""Create all tables
+"""initial
 
-Revision ID: 8a60027e23dc
+Revision ID: 806825172f35
 Revises: 
-Create Date: 2025-05-29 04:09:25.087578
+Create Date: 2025-06-02 19:03:09.453234
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision: str = '8a60027e23dc'
+revision: str = '806825172f35'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -87,6 +87,7 @@ def upgrade() -> None:
     op.create_index(op.f('ix_ai_api_key_id'), 'ai_api_key', ['id'], unique=False)
     op.create_table('community',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
+    sa.Column('community_code', sa.String(length=10), nullable=False),
     sa.Column('name', sa.String(length=150), nullable=False),
     sa.Column('description', sa.Text(), nullable=True),
     sa.Column('creator_id', sa.Integer(), nullable=False),
@@ -96,6 +97,7 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['creator_id'], ['user.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
+    op.create_index(op.f('ix_community_community_code'), 'community', ['community_code'], unique=True)
     op.create_index(op.f('ix_community_id'), 'community', ['id'], unique=False)
     op.create_index(op.f('ix_community_name'), 'community', ['name'], unique=True)
     op.create_table('content_comment',
@@ -154,7 +156,7 @@ def upgrade() -> None:
     sa.Column('correct_option', sa.String(length=1), nullable=False),
     sa.Column('explanation', sa.Text(), nullable=True),
     sa.Column('hint', sa.Text(), nullable=True),
-    sa.Column('difficulty_level', sa.Enum('Easy', 'Medium', 'Hard', name='difficulty_level_enum'), nullable=False),
+    sa.Column('difficulty_level', sa.Enum('Easy', 'Medium', 'Hard', 'Mix', name='difficulty_level_enum'), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
     sa.Column('user_id', sa.Integer(), nullable=True),
@@ -179,12 +181,25 @@ def upgrade() -> None:
     )
     op.create_index(op.f('ix_physical_file_file_hash'), 'physical_file', ['file_hash'], unique=True)
     op.create_index(op.f('ix_physical_file_id'), 'physical_file', ['id'], unique=False)
+    op.create_table('user_free_api_usage',
+    sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
+    sa.Column('user_id', sa.Integer(), nullable=False),
+    sa.Column('api_provider', sa.Enum('OpenAI', 'Google', 'Other', name='ai_provider_enum'), nullable=False),
+    sa.Column('usage_count', sa.Integer(), server_default='0', nullable=False),
+    sa.Column('last_used_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
+    sa.ForeignKeyConstraint(['user_id'], ['user.id'], ),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('user_id')
+    )
+    op.create_index(op.f('ix_user_free_api_usage_id'), 'user_free_api_usage', ['id'], unique=False)
     op.create_table('user_preference',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
     sa.Column('user_id', sa.Integer(), nullable=False),
     sa.Column('email_notifications_enabled', sa.Boolean(), server_default='true', nullable=False),
     sa.Column('default_theme', sa.String(length=50), server_default='light', nullable=False),
-    sa.Column('default_content_filter_difficulty', sa.Enum('Easy', 'Medium', 'Hard', name='difficulty_level_enum'), nullable=True),
+    sa.Column('default_content_filter_difficulty', sa.Enum('Easy', 'Medium', 'Hard', 'Mix', name='difficulty_level_enum'), nullable=True),
     sa.Column('preferences_json', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
@@ -245,13 +260,19 @@ def upgrade() -> None:
     op.create_table('gemini_file_cache',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
     sa.Column('physical_file_id', sa.Integer(), nullable=False),
-    sa.Column('processing_type', sa.String(length=50), nullable=False),
-    sa.Column('gemini_response', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+    sa.Column('api_key_id', sa.Integer(), nullable=False),
+    sa.Column('gemini_file_uri', sa.String(length=255), nullable=False),
+    sa.Column('gemini_display_name', sa.String(length=255), nullable=False),
+    sa.Column('gemini_file_unique_name', sa.String(length=255), nullable=False),
+    sa.Column('expiration_time', sa.DateTime(timezone=True), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
+    sa.ForeignKeyConstraint(['api_key_id'], ['ai_api_key.id'], ),
     sa.ForeignKeyConstraint(['physical_file_id'], ['physical_file.id'], ),
     sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('physical_file_id', 'processing_type', name='uq_gemini_file_cache_file_processing')
+    sa.UniqueConstraint('gemini_file_unique_name'),
+    sa.UniqueConstraint('gemini_file_uri'),
+    sa.UniqueConstraint('physical_file_id', 'api_key_id', 'gemini_file_uri', name='uq_gemini_file_cache')
     )
     op.create_index(op.f('ix_gemini_file_cache_id'), 'gemini_file_cache', ['id'], unique=False)
     op.create_table('mcq_question_tag_link',
@@ -266,7 +287,7 @@ def upgrade() -> None:
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
     sa.Column('title', sa.String(length=255), nullable=False),
     sa.Column('description', sa.Text(), nullable=True),
-    sa.Column('difficulty_level', sa.Enum('Easy', 'Medium', 'Hard', name='difficulty_level_enum'), nullable=False),
+    sa.Column('difficulty_level', sa.Enum('Easy', 'Medium', 'Hard', 'Mix', name='difficulty_level_enum'), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
     sa.Column('is_active', sa.Boolean(), server_default='true', nullable=False),
@@ -378,6 +399,8 @@ def downgrade() -> None:
     op.drop_table('user_session')
     op.drop_index(op.f('ix_user_preference_id'), table_name='user_preference')
     op.drop_table('user_preference')
+    op.drop_index(op.f('ix_user_free_api_usage_id'), table_name='user_free_api_usage')
+    op.drop_table('user_free_api_usage')
     op.drop_index(op.f('ix_physical_file_id'), table_name='physical_file')
     op.drop_index(op.f('ix_physical_file_file_hash'), table_name='physical_file')
     op.drop_table('physical_file')
@@ -394,6 +417,7 @@ def downgrade() -> None:
     op.drop_table('content_comment')
     op.drop_index(op.f('ix_community_name'), table_name='community')
     op.drop_index(op.f('ix_community_id'), table_name='community')
+    op.drop_index(op.f('ix_community_community_code'), table_name='community')
     op.drop_table('community')
     op.drop_index(op.f('ix_ai_api_key_id'), table_name='ai_api_key')
     op.drop_table('ai_api_key')

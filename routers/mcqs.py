@@ -513,7 +513,7 @@ async def update_quiz(
             link = McqQuizQuestionLink(
                 quiz_id=quiz_id,
                 question_id=question_id,
-                question_order=i
+                display_order=i
             )
             db.add(link)
     

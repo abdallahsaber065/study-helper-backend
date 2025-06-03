@@ -49,6 +49,19 @@ async def generate_mcqs(
                 detail="Admin or moderator access required to create community MCQs"
             )
     
+    # Validate request.num_questions
+    if request.num_questions <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Number of questions must be greater than zero"
+        )
+    
+    if request.num_questions > 60:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Maximum of 60 questions can be generated in a single request"
+        )
+    
     mcq_service = MCQGeneratorService(db)
     result = await mcq_service.generate_mcqs(request, current_user)
     return result

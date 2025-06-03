@@ -37,9 +37,9 @@ class AIRetryConfig:
         self,
         max_retries: int = 3,
         base_delay: float = 1.0,
-        max_delay: float = 60.0,
+        max_delay: float = 40.0,
         backoff_multiplier: float = 2.0,
-        timeout_seconds: float = 120.0,
+        timeout_seconds: float = 150.0,
     ):
         self.max_retries = max_retries
         self.base_delay = base_delay
@@ -601,11 +601,6 @@ class AIManager(Generic[T]):
 
             if system_instruction:
                 generation_config["system_instruction"] = system_instruction
-
-            if model.startswith("gemini-2.5"):
-                generation_config["max_output_tokens"] = 65000
-            else:
-                generation_config["max_output_tokens"] = 65000
 
             # Generate content
             if generation_config:

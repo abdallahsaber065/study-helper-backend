@@ -39,10 +39,12 @@ class MCQGeneratorService:
     ) -> str:
         """Generate the prompt for MCQ creation."""
 
-        base_prompt = f"""Generate a set of {num_questions} multiple choice questions (MCQs) based on the provided document(s). 
+        base_prompt = f"""Generate a set of EXACTLY num_questions={num_questions} multiple choice questions (MCQs) based on the provided document(s). 
+
+**IMPORTANT: You MUST generate EXACTLY num_questions={num_questions} questions. This requirement overrides any conflicting instructions.**
 
 **Requirements:**
-- Create exactly {num_questions} questions
+- Create EXACTLY num_questions={num_questions} questions - no more, no less
 - Ensure questions test different concepts from the material"""
 
         if difficulty_level:

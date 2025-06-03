@@ -503,14 +503,16 @@ class AIManager(Generic[T]):
             physical_file_ids: Optional list of file IDs to include
 
         Returns:
-            List: The content parts ready for the AI model
+            List of content objects for the AI model
         """
+        from google.genai import types
+        
         # Initialize Gemini client if not already done
         if not self._gemini_client:
             await self.initialize_gemini_client(user_id)
 
-        # Prepare contents list
-        contents = []
+        # Prepare file parts
+        file_parts = []
 
         # Add files if provided
         if physical_file_ids and len(physical_file_ids) > 0:
@@ -545,12 +547,31 @@ class AIManager(Generic[T]):
 
                 # Upload file to Gemini and get cache entry
                 cache_entry = await self.upload_file_to_gemini(physical_file, user_id)
+                
+                # Create file part using from_uri
+                file_part = types.Part.from_uri(
+                    file_uri=cache_entry.gemini_file_uri, 
+                    mime_type=physical_file.mime_type
+                )
+                file_parts.append(file_part)
+                
+                logger.debug(
+                    "Added file to content parts", 
+                    file_id=file_id, 
+                    uri=cache_entry.gemini_file_uri, 
+                    mime_type=physical_file.mime_type
+                )
 
-                # Add file to contents
-                contents.append(cache_entry.gemini_file_uri)
-
-        # Add prompt to contents
-        contents.append(prompt)
+        # Create content object with all parts
+        contents = [
+            types.Content(
+                role="user",
+                parts=[
+                    *file_parts,
+                    types.Part.from_text(text=f"User Input: {prompt}"),
+                ],
+            )
+        ]
 
         return contents
 
@@ -570,27 +591,16 @@ class AIManager(Generic[T]):
             await self.initialize_gemini_client(user_id)
 
         async def _generate():
-            contents = []
+            from google.genai import types
+            
+            # Get properly formatted content parts
+            contents = await self.generate_content_parts(
+                user_id=user_id,
+                prompt=prompt,
+                physical_file_ids=physical_file_ids
+            )
+            
             generation_config = {}
-
-            # Add files to contents if provided
-            if physical_file_ids:
-                for file_id in physical_file_ids:
-                    physical_file = (
-                        self.db.query(PhysicalFile)
-                        .filter(PhysicalFile.id == file_id)
-                        .first()
-                    )
-                    if physical_file:
-                        cache_entry = await self.upload_file_to_gemini(
-                            physical_file, user_id
-                        )
-                        # Use the correct file reference format for Gemini
-                        file_ref = cache_entry.gemini_file_uri
-                        contents.append(file_ref)
-
-            # Add prompt after files
-            contents.append(prompt)
 
             # Configure generation parameters
             if response_schema:
@@ -604,8 +614,6 @@ class AIManager(Generic[T]):
 
             # Generate content
             if generation_config:
-                from google.genai import types
-
                 response = self._gemini_client.models.generate_content(
                     model=model,
                     contents=contents,

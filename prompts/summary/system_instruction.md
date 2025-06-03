@@ -38,12 +38,11 @@ Based on the `file_context` and `user_input`, generate a summary that includes:
     * Use numbered lists (`1.`) for step-by-step processes, algorithms, or sequential information.
     * Use `**bold**` for key terms, important concepts, and critical information.
     * Use `*italic*` for emphasis or definitions.
-    * Use code blocks (``` ```) for code snippets or commands where appropriate for CS content.
+    * Use code blocks (```language code```) for code snippets or commands where appropriate for CS content.
     * Use `>` for important callouts or key takeaways if appropriate, but sparingly.
 3. **Content Style & Focus:**
     * Content should be accurate, clear, and authoritative, suitable for learning and revision.
     * Focus on being "engaging and clear" rather than overly verbose.
-    * **CS Student Focus:** Tailor explanations and examples to a CS student audience.
     * **Exam Preparation:** If the `file_context` appears to contain exam questions, past papers, or study guides, analyze these to understand the professor's focus or common exam topics. Prioritize and structure information relevant to these areas.
 
 **Content Requirements:**

@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from core.security import get_current_active_user, encrypt_api_key
 from core.logging import get_logger
 from db_config import get_db
-from models.models import User, AiApiKey, AiProviderEnum
+from models.models import User, AiApiKey, AiProviderEnum, GeminiFileCache
 from schemas.ai_cache import (
     AiApiKeyCreate, 
     AiApiKeyRead, 
@@ -55,7 +55,7 @@ async def create_api_key(
             from google import genai
             client = genai.Client(api_key=api_key_data.api_key)
             # Simple test to check if the key is valid
-            models = client.list_models()
+            models = client.models.list()
             if not models:
                 raise ValueError("Unable to list models with provided API key")
         elif provider == AiProviderEnum.OpenAI:
@@ -230,7 +230,7 @@ async def update_api_key(
             if api_key.provider_name == AiProviderEnum.Google:
                 from google import genai
                 client = genai.Client(api_key=api_key_data.api_key)
-                models = client.list_models()
+                models = client.models.list()
                 if not models:
                     raise ValueError("Unable to list models with provided API key")
             elif api_key.provider_name == AiProviderEnum.OpenAI:
@@ -303,6 +303,8 @@ async def delete_api_key(
 ):
     """
     Delete an API key.
+    
+    This will also delete any associated cached files in the gemini_file_cache table.
     """
     api_key = db.query(AiApiKey).filter(
         AiApiKey.id == api_key_id,
@@ -316,6 +318,15 @@ async def delete_api_key(
         )
     
     try:
+        # First delete any associated cache entries
+        cache_entries = db.query(GeminiFileCache).filter(
+            GeminiFileCache.api_key_id == api_key_id
+        ).all()
+        
+        for entry in cache_entries:
+            db.delete(entry)
+        
+        # Then delete the API key
         db.delete(api_key)
         db.commit()
         
@@ -323,7 +334,8 @@ async def delete_api_key(
             "API key deleted", 
             user_id=current_user.id, 
             api_key_id=api_key_id,
-            provider=api_key.provider_name.value
+            provider=api_key.provider_name.value,
+            cache_entries_deleted=len(cache_entries)
         )
         
     except Exception as e:
@@ -362,7 +374,7 @@ async def test_api_key(
         if provider == AiProviderEnum.Google:
             from google import genai
             client = genai.Client(api_key=test_data.api_key)
-            models = client.list_models()
+            models = client.models.list()
             if not models:
                 raise ValueError("Unable to list models with provided API key")
         elif provider == AiProviderEnum.OpenAI:

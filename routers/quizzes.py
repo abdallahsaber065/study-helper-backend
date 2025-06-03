@@ -165,11 +165,33 @@ async def list_my_quiz_sessions(
     db: Session = Depends(get_db)
 ):
     """List user's quiz sessions."""
-    sessions = db.query(QuizSession).filter(
-        QuizSession.user_id == current_user.id
-    ).order_by(QuizSession.started_at.desc()).offset(skip).limit(limit).all()
+    # Using join to get quiz title with the session
+    sessions = db.query(QuizSession, McqQuiz.title)\
+        .join(McqQuiz, QuizSession.quiz_id == McqQuiz.id)\
+        .filter(QuizSession.user_id == current_user.id)\
+        .order_by(QuizSession.started_at.desc())\
+        .offset(skip)\
+        .limit(limit)\
+        .all()
     
-    return sessions
+    # Combine session with quiz title
+    result = []
+    for session, quiz_title in sessions:
+        session_dict = {
+            "id": session.id,
+            "user_id": session.user_id,
+            "quiz_id": session.quiz_id,
+            "quiz_title": quiz_title,
+            "started_at": session.started_at,
+            "completed_at": session.completed_at,
+            "score": session.score,
+            "total_questions": session.total_questions,
+            "answers_json": session.answers_json,
+            "time_taken_seconds": session.time_taken_seconds
+        }
+        result.append(QuizSessionRead(**session_dict))
+    
+    return result
 
 
 @router.get("/sessions/{session_id}", response_model=QuizSessionRead)

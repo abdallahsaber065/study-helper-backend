@@ -144,6 +144,7 @@ class QuizSessionRead(BaseModel):
     id: int
     user_id: int
     quiz_id: int
+    quiz_title: Optional[str] = None
     started_at: datetime
     completed_at: Optional[datetime]
     score: Optional[int]

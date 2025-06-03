@@ -154,7 +154,7 @@ if __name__ == "__main__":
         "app:app",
         host="0.0.0.0",
         port=8000,
-        reload=True,
-        reload_excludes=["log/*"],
+        reload=False,
+        reload_excludes=["*.pyc", "*.log","*.db", "*.json"],
         reload_includes=["*.py"],
     )

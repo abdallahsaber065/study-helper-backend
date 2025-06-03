@@ -234,32 +234,19 @@ async def update_quiz_session(
             detail="Access denied to this quiz session"
         )
     
-    # Calculate new score
-    correct_answers = 0
+    # Update session with new answers
+    # Create null lists for 'correct' and 'is_correct', then map them to standardize the answers
     answer_details = {}
-    
     for answer in submission.answers:
-        question = db.query(McqQuestion).filter(McqQuestion.id == answer.question_id).first()
-        if question:
-            is_correct = question.correct_option == answer.selected_option.value
-            if is_correct:
-                correct_answers += 1
-            
             answer_details[str(answer.question_id)] = {
                 "selected": answer.selected_option.value,
-                "correct": question.correct_option,
-                "is_correct": is_correct
-            }
-    
-    # Update session
-    session.score = correct_answers
+                "correct": None,
+                "is_correct": None
+        }
+        
     session.answers_json = answer_details
-    
-    # If session wasn't completed yet, mark it as completed now
-    if not session.completed_at:
-        session.completed_at = datetime.now(timezone.utc)
-        session.time_taken_seconds = int((session.completed_at - session.started_at).total_seconds())
-    
+    session.time_taken_seconds = int((datetime.now(timezone.utc) - session.started_at).total_seconds())
+        
     db.commit()
     db.refresh(session)
     

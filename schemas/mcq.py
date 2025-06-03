@@ -2,7 +2,7 @@
 Pydantic schemas for MCQ and Quiz functionality.
 """
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 from pydantic import BaseModel, Field
 from models.models import DifficultyLevelEnum, McqQuestion
 import enum
@@ -149,7 +149,7 @@ class QuizSessionRead(BaseModel):
     completed_at: Optional[datetime]
     score: Optional[int]
     total_questions: int
-    answers_json: Optional[Dict[str, Any]]
+    answers_json: Optional[Union[Dict[str, Any], List[Any]]]
     time_taken_seconds: Optional[int]
 
     class Config:

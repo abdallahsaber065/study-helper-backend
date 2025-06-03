@@ -176,7 +176,7 @@ class MCQGenerationQuestion(BaseModel):
 class MCQGenerationSet(BaseModel):
     title: str = Field(..., description="Title")
     description: str = Field(..., description="Description")
-    questions: List[MCQGenerationQuestion] = Field(..., min_items=1, max_items=10)
+    questions: List[MCQGenerationQuestion] = Field(..., description="Questions")
     tags: List[str] = Field(..., description="Tags")
     difficulty_level: DifficultyLevelEnum = Field(..., description="Difficulty")
 
@@ -187,7 +187,7 @@ class MCQGenerationResponse(BaseModel):
 
 class MCQGenerationRequest(BaseModel):
     physical_file_ids: List[int] = Field(..., min_items=1)
-    num_questions: int = Field(default=10, ge=1, le=60)
+    num_questions: int = Field(default=30, ge=1, le=60)
     difficulty_level: Optional[DifficultyLevelEnum] = None
     custom_instructions: Optional[str] = None
     create_quiz: bool = Field(default=True, description="Whether to create a quiz from generated questions")

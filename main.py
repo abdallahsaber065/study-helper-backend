@@ -149,9 +149,12 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error("Error exporting OpenAPI schema", error=str(e), exc_info=True)
 
-    logger.info("Starting uvicorn server", host="0.0.0.0", port=8000)
+    logger.info("Starting uvicorn server with reload enabled, ignoring 'log' folder", host="0.0.0.0", port=8000)
     uvicorn.run(
         "app:app",
         host="0.0.0.0",
         port=8000,
+        reload=True,
+        reload_excludes=["log/*"],
+        reload_includes=["*.py"],
     )

@@ -3,9 +3,9 @@ Router for Background Tasks and System Operations.
 """
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from db_config import get_db
+from db_config import get_async_db
 from core.security import get_current_user
 from models.models import User, ContentTypeEnum
 from services.background_tasks import (
@@ -19,7 +19,7 @@ router = APIRouter(prefix="/background-tasks", tags=["Background Tasks"])
 @router.post("/analytics/sync")
 async def submit_analytics_sync(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Submit analytics synchronization task (admin only)."""
     if current_user.role.value != "admin":
@@ -43,7 +43,7 @@ async def submit_version_cleanup(
     content_id: int,
     keep_latest: int = Query(10, ge=1, le=50, description="Number of latest versions to keep"),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Submit version cleanup task."""
     # TODO: Add permission check - user should own the content or be admin
@@ -70,7 +70,7 @@ async def submit_content_analysis(
     content_type: ContentTypeEnum,
     content_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Submit content engagement analysis task."""
     task_id = submit_content_analysis_task(

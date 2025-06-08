@@ -3,9 +3,9 @@ Router for Content Versioning.
 """
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from db_config import get_db
+from db_config import get_async_db
 from core.security import get_current_user
 from models.models import User, ContentTypeEnum
 from schemas.versioning import (
@@ -17,31 +17,27 @@ from services.versioning_service import ContentVersioningService
 router = APIRouter(prefix="/versioning", tags=["Content Versioning"])
 
 
-@router.post("/content/{content_type}/{content_id}/create-version", response_model=ContentVersionRead)
+@router.post("/content/{content_type}/{content_id}/create-version")
 async def create_content_version(
     content_type: ContentTypeEnum,
     content_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Create a new version of content."""
     versioning_service = ContentVersioningService(db)
     
-    # TODO: Add permission check - user should own the content or have edit rights
-    
-    version = versioning_service.create_version(
+    version = await versioning_service.create_version(
         content_type=content_type,
         content_id=content_id,
         user_id=current_user.id
     )
     
-    # Convert to read schema with user details
-    version_read = ContentVersionRead.from_orm(version)
-    version_read.username = current_user.username
-    version_read.first_name = current_user.first_name
-    version_read.last_name = current_user.last_name
-    
-    return version_read
+    return {
+        "message": f"Version {version.version_number} created successfully",
+        "version_number": version.version_number,
+        "version_id": version.id
+    }
 
 
 @router.get("/content/{content_type}/{content_id}/versions", response_model=ContentVersionListResponse)
@@ -50,12 +46,12 @@ async def get_content_versions(
     content_id: int,
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Get all versions for specific content."""
     versioning_service = ContentVersioningService(db)
     
-    versions, total_count, current_version = versioning_service.get_content_versions(
+    versions, total_count, current_version = await versioning_service.get_content_versions(
         content_type=content_type,
         content_id=content_id,
         skip=skip,
@@ -71,16 +67,16 @@ async def get_content_versions(
 
 
 @router.get("/content/{content_type}/{content_id}/versions/{version_number}", response_model=ContentVersionRead)
-async def get_specific_version(
+async def get_content_version(
     content_type: ContentTypeEnum,
     content_id: int,
     version_number: int,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Get a specific version of content."""
     versioning_service = ContentVersioningService(db)
     
-    version = versioning_service.get_version(
+    version = await versioning_service.get_version(
         content_type=content_type,
         content_id=content_id,
         version_number=version_number
@@ -89,24 +85,24 @@ async def get_specific_version(
     if not version:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Version not found"
+            detail=f"Version {version_number} not found"
         )
     
     return version
 
 
 @router.get("/content/{content_type}/{content_id}/compare", response_model=ContentVersionCompareResponse)
-async def compare_versions(
+async def compare_content_versions(
     content_type: ContentTypeEnum,
     content_id: int,
     version_a: int = Query(..., description="First version to compare"),
     version_b: int = Query(..., description="Second version to compare"),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Compare two versions of content."""
     versioning_service = ContentVersioningService(db)
     
-    comparison = versioning_service.compare_versions(
+    comparison = await versioning_service.compare_versions(
         content_type=content_type,
         content_id=content_id,
         version_a=version_a,
@@ -122,44 +118,43 @@ async def restore_content_version(
     content_id: int,
     version_number: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
-    """Restore content to a previous version."""
+    """Restore content to a specific version."""
     versioning_service = ContentVersioningService(db)
     
-    # TODO: Add permission check - user should own the content or have edit rights
-    
-    result = versioning_service.restore_version(
+    restore_response = await versioning_service.restore_version(
         content_type=content_type,
         content_id=content_id,
         version_number=version_number,
         user_id=current_user.id
     )
     
-    return result
+    return restore_response
 
 
-@router.delete("/content/{content_type}/{content_id}/cleanup-versions")
+@router.delete("/content/{content_type}/{content_id}/cleanup")
 async def cleanup_old_versions(
     content_type: ContentTypeEnum,
     content_id: int,
-    keep_latest: int = Query(10, ge=1, le=50, description="Number of latest versions to keep"),
+    keep_latest: int = Query(10, ge=1, le=100, description="Number of latest versions to keep"),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
-    """Delete old versions, keeping only the latest N versions."""
+    """Clean up old versions, keeping only the latest N versions."""
+    # Only allow content creators or admins to cleanup versions
+    # This would require additional authorization logic based on content ownership
+    
     versioning_service = ContentVersioningService(db)
     
-    # TODO: Add permission check - user should own the content or be admin
-    
-    deleted_count = versioning_service.delete_old_versions(
+    deleted_count = await versioning_service.delete_old_versions(
         content_type=content_type,
         content_id=content_id,
         keep_latest=keep_latest
     )
     
     return {
-        "message": f"Deleted {deleted_count} old versions",
+        "message": f"Cleaned up {deleted_count} old versions",
         "deleted_count": deleted_count,
-        "kept_latest": keep_latest
+        "versions_kept": keep_latest
     } 

@@ -3,9 +3,9 @@ Router for Content Analytics.
 """
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from db_config import get_db
+from db_config import get_async_db
 from core.security import get_current_user
 from models.models import User, ContentTypeEnum
 from schemas.analytics import (
@@ -22,7 +22,7 @@ async def increment_content_metric(
     content_type: ContentTypeEnum,
     content_id: int,
     increment_data: AnalyticsIncrement,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Increment a specific metric for content."""
     analytics_service = ContentAnalyticsService(db)
@@ -39,7 +39,7 @@ async def increment_content_metric(
 async def get_content_analytics(
     content_type: ContentTypeEnum,
     content_id: int,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Get analytics for specific content."""
     analytics_service = ContentAnalyticsService(db)
@@ -54,7 +54,7 @@ async def get_content_analytics(
 async def get_content_engagement_metrics(
     content_type: ContentTypeEnum,
     content_id: int,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Get detailed engagement metrics for content."""
     analytics_service = ContentAnalyticsService(db)
@@ -70,7 +70,7 @@ async def get_top_content(
     content_type: Optional[ContentTypeEnum] = Query(None),
     limit: int = Query(10, ge=1, le=50),
     metric: str = Query("engagement", pattern="^(engagement|views|likes|comments|shares)$"),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Get top performing content."""
     analytics_service = ContentAnalyticsService(db)
@@ -86,7 +86,7 @@ async def get_top_content(
 async def get_analytics_dashboard(
     user_id: Optional[int] = Query(None, description="Filter by user (admin only)"),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Get dashboard analytics with aggregated metrics."""
     analytics_service = ContentAnalyticsService(db)
@@ -109,7 +109,7 @@ async def get_analytics_dashboard(
 @router.post("/sync-comment-counts")
 async def sync_comment_counts(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Synchronize comment counts with actual comment data (admin only)."""
     if current_user.role.value != "admin":
@@ -127,7 +127,7 @@ async def sync_comment_counts(
 @router.post("/cleanup-orphaned")
 async def cleanup_orphaned_analytics(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Remove analytics for content that no longer exists (admin only)."""
     if current_user.role.value != "admin":
@@ -149,7 +149,7 @@ async def cleanup_orphaned_analytics(
 async def track_content_view(
     content_type: ContentTypeEnum,
     content_id: int,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Track a content view (public endpoint for easy integration)."""
     analytics_service = ContentAnalyticsService(db)
@@ -169,7 +169,7 @@ async def track_content_like(
     content_type: ContentTypeEnum,
     content_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Track a content like (requires authentication)."""
     analytics_service = ContentAnalyticsService(db)
@@ -189,7 +189,7 @@ async def track_content_share(
     content_type: ContentTypeEnum,
     content_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Track a content share (requires authentication)."""
     analytics_service = ContentAnalyticsService(db)

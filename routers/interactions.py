@@ -4,10 +4,11 @@ Router for Content Interactions (Comments and Ratings).
 from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import Integer, func, and_
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+from sqlalchemy import Integer, func, and_, select
 
-from db_config import get_db
+from db_config import get_async_db
 from core.security import get_current_user
 from models.models import (
     User, ContentComment, ContentRating, ContentTypeEnum, 
@@ -26,14 +27,20 @@ from services.notification_service import NotificationService
 router = APIRouter(prefix="/interactions", tags=["Content Interactions"])
 
 
-def _verify_content_exists(content_type: ContentTypeEnum, content_id: int, db: Session) -> bool:
+async def _verify_content_exists(content_type: ContentTypeEnum, content_id: int, db: AsyncSession) -> bool:
     """Verify that the content exists."""
     if content_type == ContentTypeEnum.summary:
-        return db.query(Summary).filter(Summary.id == content_id).first() is not None
+        stmt = select(Summary).where(Summary.id == content_id)
+        result = await db.execute(stmt)
+        return result.scalar_one_or_none() is not None
     elif content_type == ContentTypeEnum.quiz:
-        return db.query(McqQuiz).filter(McqQuiz.id == content_id).first() is not None
+        stmt = select(McqQuiz).where(McqQuiz.id == content_id)
+        result = await db.execute(stmt)
+        return result.scalar_one_or_none() is not None
     elif content_type == ContentTypeEnum.file:
-        return db.query(PhysicalFile).filter(PhysicalFile.id == content_id).first() is not None
+        stmt = select(PhysicalFile).where(PhysicalFile.id == content_id)
+        result = await db.execute(stmt)
+        return result.scalar_one_or_none() is not None
     return False
 
 
@@ -64,11 +71,11 @@ def _convert_comment_to_read(comment: ContentComment, include_replies: bool = Fa
 async def create_comment(
     comment_data: ContentCommentCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Create a new comment on content."""
     # Verify content exists
-    if not _verify_content_exists(comment_data.content_type, comment_data.content_id, db):
+    if not await _verify_content_exists(comment_data.content_type, comment_data.content_id, db):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"{comment_data.content_type.value.title()} not found"
@@ -76,12 +83,14 @@ async def create_comment(
     
     # Verify parent comment exists if provided
     if comment_data.parent_comment_id:
-        parent_comment = db.query(ContentComment).filter(
+        parent_stmt = select(ContentComment).where(
             ContentComment.id == comment_data.parent_comment_id,
             ContentComment.content_type == comment_data.content_type,
             ContentComment.content_id == comment_data.content_id,
             ContentComment.is_deleted == False
-        ).first()
+        )
+        parent_result = await db.execute(parent_stmt)
+        parent_comment = parent_result.scalar_one_or_none()
         
         if not parent_comment:
             raise HTTPException(
@@ -99,23 +108,27 @@ async def create_comment(
     )
     
     db.add(new_comment)
-    db.commit()
-    db.refresh(new_comment)
+    await db.commit()
+    await db.refresh(new_comment)
     
     # Load comment with author
-    comment_with_author = db.query(ContentComment).options(
-        joinedload(ContentComment.author)
-    ).filter(ContentComment.id == new_comment.id).first()
+    comment_stmt = select(ContentComment).options(
+        selectinload(ContentComment.author)
+    ).where(ContentComment.id == new_comment.id)
+    comment_result = await db.execute(comment_stmt)
+    comment_with_author = comment_result.scalar_one()
     
     # Send notification for reply
     if comment_data.parent_comment_id:
         notification_service = NotificationService(db)
-        parent_comment = db.query(ContentComment).filter(
+        parent_stmt = select(ContentComment).where(
             ContentComment.id == comment_data.parent_comment_id
-        ).first()
+        )
+        parent_result = await db.execute(parent_stmt)
+        parent_comment = parent_result.scalar_one_or_none()
         
         if parent_comment and parent_comment.author_id != current_user.id:
-            notification_service.notify_comment_reply(
+            await notification_service.notify_comment_reply(
                 original_comment_author_id=parent_comment.author_id,
                 reply_author_id=current_user.id,
                 content_type=comment_data.content_type,
@@ -136,41 +149,53 @@ async def get_comments(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
     include_replies: bool = Query(True),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Get comments for specific content."""
     # Verify content exists
-    if not _verify_content_exists(content_type, content_id, db):
+    if not await _verify_content_exists(content_type, content_id, db):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"{content_type.value.title()} not found"
         )
     
     # Get top-level comments (no parent)
-    query = db.query(ContentComment).options(
-        joinedload(ContentComment.author)
-    ).filter(
+    stmt = select(ContentComment).options(
+        selectinload(ContentComment.author)
+    ).where(
+        ContentComment.content_type == content_type,
+        ContentComment.content_id == content_id,
+        ContentComment.parent_comment_id.is_(None),
+        ContentComment.is_deleted == False
+    ).order_by(ContentComment.created_at.desc())
+    
+    # Get total count
+    count_stmt = select(func.count(ContentComment.id)).where(
         ContentComment.content_type == content_type,
         ContentComment.content_id == content_id,
         ContentComment.parent_comment_id.is_(None),
         ContentComment.is_deleted == False
     )
+    count_result = await db.execute(count_stmt)
+    total_count = count_result.scalar()
     
-    total_count = query.count()
-    
-    comments = query.order_by(
-        ContentComment.created_at.desc()
-    ).offset(skip).limit(limit).all()
+    # Get paginated comments
+    paginated_stmt = stmt.offset(skip).limit(limit)
+    result = await db.execute(paginated_stmt)
+    comments = result.scalars().all()
     
     # If including replies, load them
     if include_replies:
         for comment in comments:
-            replies = db.query(ContentComment).options(
-                joinedload(ContentComment.author)
-            ).filter(
+            replies_stmt = select(ContentComment).options(
+                selectinload(ContentComment.author)
+            ).where(
                 ContentComment.parent_comment_id == comment.id,
                 ContentComment.is_deleted == False
-            ).order_by(ContentComment.created_at.asc()).all()
+            ).order_by(ContentComment.created_at.asc())
+            
+            replies_result = await db.execute(replies_stmt)
+            replies = replies_result.scalars().all()
             comment.replies = replies
     
     comment_reads = [_convert_comment_to_read(comment, include_replies) for comment in comments]
@@ -187,15 +212,14 @@ async def update_comment(
     comment_id: int,
     update_data: ContentCommentUpdate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
-    """Update a comment (by author only)."""
-    comment = db.query(ContentComment).options(
-        joinedload(ContentComment.author)
-    ).filter(
-        ContentComment.id == comment_id,
-        ContentComment.is_deleted == False
-    ).first()
+    """Update a comment."""
+    stmt = select(ContentComment).options(
+        selectinload(ContentComment.author)
+    ).where(ContentComment.id == comment_id)
+    result = await db.execute(stmt)
+    comment = result.scalar_one_or_none()
     
     if not comment:
         raise HTTPException(
@@ -203,21 +227,27 @@ async def update_comment(
             detail="Comment not found"
         )
     
-    # Check ownership
-    if comment.author_id != current_user.id:
+    # Check ownership or admin rights
+    if comment.author_id != current_user.id and current_user.role.value != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only update your own comments"
+            detail="Not authorized to update this comment"
+        )
+    
+    # Check if comment is deleted
+    if comment.is_deleted:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot update deleted comment"
         )
     
     # Update comment
-    if update_data.comment_text:
-        comment.comment_text = update_data.comment_text
-        comment.is_edited = True
-        comment.updated_at = datetime.now(timezone.utc)
+    comment.comment_text = update_data.comment_text
+    comment.is_edited = True
+    comment.updated_at = datetime.now(timezone.utc)
     
-    db.commit()
-    db.refresh(comment)
+    await db.commit()
+    await db.refresh(comment)
     
     return _convert_comment_to_read(comment)
 
@@ -226,13 +256,12 @@ async def update_comment(
 async def delete_comment(
     comment_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
-    """Soft delete a comment (by author only)."""
-    comment = db.query(ContentComment).filter(
-        ContentComment.id == comment_id,
-        ContentComment.is_deleted == False
-    ).first()
+    """Delete (soft delete) a comment."""
+    stmt = select(ContentComment).where(ContentComment.id == comment_id)
+    result = await db.execute(stmt)
+    comment = result.scalar_one_or_none()
     
     if not comment:
         raise HTTPException(
@@ -240,18 +269,18 @@ async def delete_comment(
             detail="Comment not found"
         )
     
-    # Check ownership or admin role
+    # Check ownership or admin rights
     if comment.author_id != current_user.id and current_user.role.value != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only delete your own comments"
+            detail="Not authorized to delete this comment"
         )
     
     # Soft delete
     comment.is_deleted = True
     comment.updated_at = datetime.now(timezone.utc)
     
-    db.commit()
+    await db.commit()
 
 
 # ============ Ratings Endpoints ============
@@ -260,32 +289,38 @@ async def delete_comment(
 async def create_or_update_rating(
     rating_data: ContentRatingCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Create or update a rating for content."""
     # Verify content exists
-    if not _verify_content_exists(rating_data.content_type, rating_data.content_id, db):
+    if not await _verify_content_exists(rating_data.content_type, rating_data.content_id, db):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"{rating_data.content_type.value.title()} not found"
         )
     
     # Check if user already rated this content
-    existing_rating = db.query(ContentRating).filter(
+    existing_stmt = select(ContentRating).where(
         ContentRating.user_id == current_user.id,
         ContentRating.content_type == rating_data.content_type,
         ContentRating.content_id == rating_data.content_id
-    ).first()
+    )
+    existing_result = await db.execute(existing_stmt)
+    existing_rating = existing_result.scalar_one_or_none()
     
     if existing_rating:
         # Update existing rating
         existing_rating.rating = rating_data.rating
         existing_rating.review_text = rating_data.review_text
         existing_rating.updated_at = datetime.now(timezone.utc)
-        db.commit()
-        db.refresh(existing_rating)
-        rating = existing_rating
-        message = "Rating updated successfully"
+        
+        await db.commit()
+        await db.refresh(existing_rating)
+        
+        return RatingCreateResponse(
+            message="Rating updated successfully",
+            rating=ContentRatingRead.from_orm(existing_rating)
+        )
     else:
         # Create new rating
         new_rating = ContentRating(
@@ -295,35 +330,15 @@ async def create_or_update_rating(
             rating=rating_data.rating,
             review_text=rating_data.review_text
         )
+        
         db.add(new_rating)
-        db.commit()
-        db.refresh(new_rating)
-        rating = new_rating
-        message = "Rating created successfully"
-    
-    # Load rating with user
-    rating_with_user = db.query(ContentRating).options(
-        joinedload(ContentRating.user)
-    ).filter(ContentRating.id == rating.id).first()
-    
-    # Get rating stats
-    stats = await get_content_rating_stats(
-        content_type=rating_data.content_type,
-        content_id=rating_data.content_id,
-        db=db
-    )
-    
-    rating_read = ContentRatingRead.from_orm(rating_with_user)
-    if rating_with_user.user:
-        rating_read.username = rating_with_user.user.username
-        rating_read.first_name = rating_with_user.user.first_name
-        rating_read.last_name = rating_with_user.user.last_name
-    
-    return RatingCreateResponse(
-        message=message,
-        rating=rating_read,
-        stats=stats
-    )
+        await db.commit()
+        await db.refresh(new_rating)
+        
+        return RatingCreateResponse(
+            message="Rating created successfully",
+            rating=ContentRatingRead.from_orm(new_rating)
+        )
 
 
 @router.get("/ratings", response_model=List[ContentRatingRead])
@@ -332,30 +347,34 @@ async def get_content_ratings(
     content_id: int = Query(...),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
-    """Get ratings for specific content."""
+    """Get all ratings for specific content."""
     # Verify content exists
-    if not _verify_content_exists(content_type, content_id, db):
+    if not await _verify_content_exists(content_type, content_id, db):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"{content_type.value.title()} not found"
         )
     
-    ratings = db.query(ContentRating).options(
-        joinedload(ContentRating.user)
-    ).filter(
+    stmt = select(ContentRating).options(
+        selectinload(ContentRating.user)
+    ).where(
         ContentRating.content_type == content_type,
         ContentRating.content_id == content_id
-    ).order_by(ContentRating.created_at.desc()).offset(skip).limit(limit).all()
+    ).order_by(ContentRating.created_at.desc()).offset(skip).limit(limit)
+    
+    result = await db.execute(stmt)
+    ratings = result.scalars().all()
     
     rating_reads = []
     for rating in ratings:
         rating_read = ContentRatingRead.from_orm(rating)
+        # Add user details
         if rating.user:
-            rating_read.username = rating.user.username
-            rating_read.first_name = rating.user.first_name
-            rating_read.last_name = rating.user.last_name
+            rating_read.user_username = rating.user.username
+            rating_read.user_first_name = rating.user.first_name
+            rating_read.user_last_name = rating.user.last_name
         rating_reads.append(rating_read)
     
     return rating_reads
@@ -365,47 +384,54 @@ async def get_content_ratings(
 async def get_content_rating_stats(
     content_type: ContentTypeEnum = Query(...),
     content_id: int = Query(...),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
-    """Get rating statistics for specific content."""
+    """Get rating statistics for content."""
     # Verify content exists
-    if not _verify_content_exists(content_type, content_id, db):
+    if not await _verify_content_exists(content_type, content_id, db):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"{content_type.value.title()} not found"
         )
     
     # Get rating statistics
-    ratings = db.query(ContentRating).filter(
+    stats_stmt = select(
+        func.avg(ContentRating.rating.cast(Integer)).label('average_rating'),
+        func.count(ContentRating.id).label('total_ratings'),
+        func.count(func.distinct(ContentRating.user_id)).label('unique_raters')
+    ).where(
         ContentRating.content_type == content_type,
         ContentRating.content_id == content_id
-    ).all()
+    )
     
-    if ratings:
-        # Calculate average manually
-        rating_values = [int(rating.rating.value) for rating in ratings]
-        average_rating = sum(rating_values) / len(rating_values)
-        total_ratings = len(ratings)
-    else:
-        average_rating = None
-        total_ratings = 0
+    stats_result = await db.execute(stats_stmt)
+    stats = stats_result.first()
     
-    # Get rating breakdown
-    rating_breakdown = {}
-    for rating_value in RatingValueEnum:
-        count = db.query(ContentRating).filter(
-            ContentRating.content_type == content_type,
-            ContentRating.content_id == content_id,
-            ContentRating.rating == rating_value
-        ).count()
-        rating_breakdown[rating_value.value] = count
+    # Get rating distribution
+    distribution_stmt = select(
+        ContentRating.rating,
+        func.count(ContentRating.id).label('count')
+    ).where(
+        ContentRating.content_type == content_type,
+        ContentRating.content_id == content_id
+    ).group_by(ContentRating.rating)
+    
+    distribution_result = await db.execute(distribution_stmt)
+    rating_distribution = {str(row.rating): row.count for row in distribution_result}
+    
+    # Total count
+    count_stmt = select(func.count(ContentRating.id)).where(
+        ContentRating.content_type == content_type,
+        ContentRating.content_id == content_id
+    )
+    count_result = await db.execute(count_stmt)
+    total_count = count_result.scalar()
     
     return ContentRatingStats(
-        content_type=content_type,
-        content_id=content_id,
-        average_rating=average_rating,
-        total_ratings=total_ratings,
-        rating_breakdown=rating_breakdown
+        average_rating=float(stats.average_rating) if stats.average_rating else 0.0,
+        total_ratings=stats.total_ratings,
+        unique_raters=stats.unique_raters,
+        rating_distribution=rating_distribution
     )
 
 
@@ -413,10 +439,12 @@ async def get_content_rating_stats(
 async def delete_rating(
     rating_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
-    """Delete a rating (by author only)."""
-    rating = db.query(ContentRating).filter(ContentRating.id == rating_id).first()
+    """Delete a rating."""
+    stmt = select(ContentRating).where(ContentRating.id == rating_id)
+    result = await db.execute(stmt)
+    rating = result.scalar_one_or_none()
     
     if not rating:
         raise HTTPException(
@@ -424,12 +452,12 @@ async def delete_rating(
             detail="Rating not found"
         )
     
-    # Check ownership
-    if rating.user_id != current_user.id:
+    # Check ownership or admin rights
+    if rating.user_id != current_user.id and current_user.role.value != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only delete your own ratings"
+            detail="Not authorized to delete this rating"
         )
     
-    db.delete(rating)
-    db.commit() 
+    await db.delete(rating)
+    await db.commit() 

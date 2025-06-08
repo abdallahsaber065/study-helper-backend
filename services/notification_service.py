@@ -3,7 +3,9 @@ Notification service for managing user notifications.
 """
 from datetime import datetime, timezone
 from typing import List, Optional
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+from sqlalchemy import select, update, func
 from fastapi import HTTPException, status
 
 from models.models import (
@@ -16,10 +18,10 @@ from schemas.notification import NotificationCreate, NotificationRead
 class NotificationService:
     """Service for managing user notifications."""
 
-    def __init__(self, db: Session):
+    def __init__(self, db: AsyncSession):
         self.db = db
 
-    def create_notification(
+    async def create_notification(
         self,
         user_id: int,
         notification_type: NotificationTypeEnum,
@@ -46,11 +48,11 @@ class NotificationService:
         )
         
         self.db.add(notification)
-        self.db.commit()
-        self.db.refresh(notification)
+        await self.db.commit()
+        await self.db.refresh(notification)
         return notification
 
-    def notify_new_community_content(
+    async def notify_new_community_content(
         self,
         content_type: ContentTypeEnum,
         content_id: int,
@@ -62,20 +64,24 @@ class NotificationService:
         from models.models import CommunityMember
         
         # Get all community members except the actor
-        members = self.db.query(CommunityMember).filter(
+        members_stmt = select(CommunityMember).where(
             CommunityMember.community_id == community_id,
             CommunityMember.user_id != actor_id
-        ).all()
+        )
+        members_result = await self.db.execute(members_stmt)
+        members = members_result.scalars().all()
         
         # Get community name
-        community = self.db.query(Community).filter(Community.id == community_id).first()
+        community_stmt = select(Community).where(Community.id == community_id)
+        community_result = await self.db.execute(community_stmt)
+        community = community_result.scalar_one_or_none()
         community_name = community.name if community else "Unknown Community"
         
         content_type_str = content_type.value
         message = f"New {content_type_str} '{content_title}' was added to {community_name}"
         
         for member in members:
-            self.create_notification(
+            await self.create_notification(
                 user_id=member.user_id,
                 notification_type=NotificationTypeEnum.new_content,
                 message=message,
@@ -85,7 +91,7 @@ class NotificationService:
                 related_community_id=community_id,
             )
 
-    def notify_comment_reply(
+    async def notify_comment_reply(
         self,
         original_comment_author_id: int,
         reply_author_id: int,
@@ -94,13 +100,15 @@ class NotificationService:
         reply_text: str
     ):
         """Notify user when someone replies to their comment."""
-        reply_author = self.db.query(User).filter(User.id == reply_author_id).first()
+        reply_author_stmt = select(User).where(User.id == reply_author_id)
+        reply_author_result = await self.db.execute(reply_author_stmt)
+        reply_author = reply_author_result.scalar_one_or_none()
         actor_name = f"{reply_author.first_name} {reply_author.last_name}" if reply_author else "Someone"
         
         preview_text = reply_text[:50] + "..." if len(reply_text) > 50 else reply_text
         message = f"{actor_name} replied to your comment: {preview_text}"
         
-        self.create_notification(
+        await self.create_notification(
             user_id=original_comment_author_id,
             notification_type=NotificationTypeEnum.comment_reply,
             message=message,
@@ -109,7 +117,7 @@ class NotificationService:
             related_content_id=content_id,
         )
 
-    def notify_quiz_result(
+    async def notify_quiz_result(
         self,
         user_id: int,
         quiz_id: int,
@@ -117,13 +125,15 @@ class NotificationService:
         total_questions: int
     ):
         """Notify user about quiz completion results."""
-        quiz = self.db.query(McqQuiz).filter(McqQuiz.id == quiz_id).first()
+        quiz_stmt = select(McqQuiz).where(McqQuiz.id == quiz_id)
+        quiz_result = await self.db.execute(quiz_stmt)
+        quiz = quiz_result.scalar_one_or_none()
         quiz_title = quiz.title if quiz else "Quiz"
         
         percentage = round((score / total_questions) * 100) if total_questions > 0 else 0
         message = f"Quiz '{quiz_title}' completed! Score: {score}/{total_questions} ({percentage}%)"
         
-        self.create_notification(
+        await self.create_notification(
             user_id=user_id,
             notification_type=NotificationTypeEnum.quiz_result,
             message=message,
@@ -131,22 +141,27 @@ class NotificationService:
             related_content_id=quiz_id,
         )
 
-    def notify_community_invite(
+    async def notify_community_invite(
         self,
         user_id: int,
         community_id: int,
         inviter_id: int
     ):
         """Notify user about community invitation."""
-        community = self.db.query(Community).filter(Community.id == community_id).first()
-        inviter = self.db.query(User).filter(User.id == inviter_id).first()
+        community_stmt = select(Community).where(Community.id == community_id)
+        community_result = await self.db.execute(community_stmt)
+        community = community_result.scalar_one_or_none()
+        
+        inviter_stmt = select(User).where(User.id == inviter_id)
+        inviter_result = await self.db.execute(inviter_stmt)
+        inviter = inviter_result.scalar_one_or_none()
         
         community_name = community.name if community else "Unknown Community"
         inviter_name = f"{inviter.first_name} {inviter.last_name}" if inviter else "Someone"
         
         message = f"{inviter_name} invited you to join '{community_name}'"
         
-        self.create_notification(
+        await self.create_notification(
             user_id=user_id,
             notification_type=NotificationTypeEnum.community_invite,
             message=message,
@@ -154,7 +169,7 @@ class NotificationService:
             related_community_id=community_id,
         )
 
-    def get_user_notifications(
+    async def get_user_notifications(
         self,
         user_id: int,
         skip: int = 0,
@@ -162,27 +177,39 @@ class NotificationService:
         unread_only: bool = False
     ) -> tuple[List[NotificationRead], int, int]:
         """Get user notifications with pagination."""
-        query = self.db.query(Notification).options(
-            joinedload(Notification.actor_user),
-            joinedload(Notification.related_community)
-        ).filter(Notification.user_id == user_id)
+        
+        # Build base query
+        base_stmt = select(Notification).options(
+            selectinload(Notification.actor_user),
+            selectinload(Notification.related_community)
+        ).where(Notification.user_id == user_id)
         
         if unread_only:
-            query = query.filter(Notification.is_read == False)
+            base_stmt = base_stmt.where(Notification.is_read == False)
         
         # Get total count
-        total_count = query.count()
+        count_stmt = select(func.count(Notification.id)).where(Notification.user_id == user_id)
+        if unread_only:
+            count_stmt = count_stmt.where(Notification.is_read == False)
+        
+        count_result = await self.db.execute(count_stmt)
+        total_count = count_result.scalar()
         
         # Get unread count
-        unread_count = self.db.query(Notification).filter(
+        unread_count_stmt = select(func.count(Notification.id)).where(
             Notification.user_id == user_id,
             Notification.is_read == False
-        ).count()
+        )
+        unread_count_result = await self.db.execute(unread_count_stmt)
+        unread_count = unread_count_result.scalar()
         
         # Get paginated results
-        notifications = query.order_by(
+        notifications_stmt = base_stmt.order_by(
             Notification.created_at.desc()
-        ).offset(skip).limit(limit).all()
+        ).offset(skip).limit(limit)
+        
+        notifications_result = await self.db.execute(notifications_stmt)
+        notifications = notifications_result.scalars().all()
         
         # Convert to read schemas
         notification_reads = []
@@ -203,41 +230,40 @@ class NotificationService:
         
         return notification_reads, total_count, unread_count
 
-    def mark_notifications_read(
+    async def mark_notifications_read(
         self,
         user_id: int,
         notification_ids: Optional[List[int]] = None
     ) -> int:
-        """Mark notifications as read. If no IDs provided, marks all user's notifications as read."""
-        query = self.db.query(Notification).filter(
-            Notification.user_id == user_id,
-            Notification.is_read == False
-        )
-        
+        """Mark notifications as read."""
         if notification_ids:
-            query = query.filter(Notification.id.in_(notification_ids))
+            # Mark specific notifications as read
+            stmt = update(Notification).where(
+                Notification.user_id == user_id,
+                Notification.id.in_(notification_ids)
+            ).values(is_read=True, updated_at=datetime.now(timezone.utc))
+        else:
+            # Mark all user's notifications as read
+            stmt = update(Notification).where(
+                Notification.user_id == user_id
+            ).values(is_read=True, updated_at=datetime.now(timezone.utc))
         
-        updated_count = query.update(
-            {Notification.is_read: True, Notification.updated_at: datetime.now(timezone.utc)},
-            synchronize_session=False
-        )
-        
-        self.db.commit()
-        return updated_count
+        result = await self.db.execute(stmt)
+        await self.db.commit()
+        return result.rowcount
 
-    def delete_notification(self, notification_id: int, user_id: int) -> bool:
-        """Delete a notification (only by the recipient)."""
-        notification = self.db.query(Notification).filter(
+    async def delete_notification(self, notification_id: int, user_id: int) -> bool:
+        """Delete a notification."""
+        stmt = select(Notification).where(
             Notification.id == notification_id,
             Notification.user_id == user_id
-        ).first()
+        )
+        result = await self.db.execute(stmt)
+        notification = result.scalar_one_or_none()
         
         if not notification:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Notification not found"
-            )
+            return False
         
-        self.db.delete(notification)
-        self.db.commit()
+        await self.db.delete(notification)
+        await self.db.commit()
         return True 

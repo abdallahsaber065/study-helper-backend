@@ -17,7 +17,7 @@ os.chdir(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 print(f"Working directory: {os.getcwd()}")
 
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import text, select
 from db_config import get_db, engine
 from models.models import *  # Assuming User model is defined here for clear_test_users
 
@@ -221,16 +221,14 @@ def clear_test_users(db: Session, confirm: bool = False):
 
     try:
         # Find test users (those with test-like usernames/emails)
-        test_users = (
-            db.query(User)
-            .filter(
-                (User.username.like("%test%"))
-                | (User.username.like("%fileuser_%"))
-                | (User.username.like("%shareuser_%"))
-                | (User.email.like("%test%@%"))
-            )
-            .all()
+        test_users_stmt = select(User).where(
+            (User.username.like("%test%"))
+            | (User.username.like("%fileuser_%"))
+            | (User.username.like("%shareuser_%"))
+            | (User.email.like("%test%@%"))
         )
+        test_users_result = db.execute(test_users_stmt)
+        test_users = test_users_result.scalars().all()
 
         print(f"Found {len(test_users)} test users:")
         for user_obj in test_users:

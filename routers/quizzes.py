@@ -4,8 +4,11 @@ Router for MCQ and Quiz functionality.
 from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy.orm import Session, joinedload
-from db_config import get_db
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload, joinedload
+from sqlalchemy import select, func, or_, and_, delete
+
+from db_config import get_async_db
 from core.security import get_current_user
 from models.models import (
     User, QuestionTag, McqQuestion, McqQuestionTagLink, 
@@ -27,22 +30,20 @@ from services.notification_service import NotificationService
 router = APIRouter(prefix="/quizzes", tags=["Quizzes"])
 
 
-
-
 # ============ AI MCQ Generation ============
 
 @router.post("/generate")
 async def generate_mcqs(
     request: MCQGenerationRequest,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Generate MCQs from files using AI."""
     # Check community access if community_id is provided
     if request.community_id:
         community_service = CommunityService(db)
         try:
-            community_service._check_admin_or_moderator(current_user, request.community_id)
+            await community_service._check_admin_or_moderator(current_user, request.community_id)
         except HTTPException:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -73,14 +74,14 @@ async def generate_mcqs(
 async def create_quiz(
     quiz: McqQuizCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Create a new quiz."""
     # Check community access if community_id is provided
     if quiz.community_id:
         community_service = CommunityService(db)
         try:
-            community_service._check_admin_or_moderator(current_user, quiz.community_id)
+            await community_service._check_admin_or_moderator(current_user, quiz.community_id)
         except HTTPException:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -91,13 +92,15 @@ async def create_quiz(
     quiz_data = quiz.dict(exclude={"question_ids"})
     db_quiz = McqQuiz(**quiz_data, user_id=current_user.id)
     db.add(db_quiz)
-    db.commit()
-    db.refresh(db_quiz)
+    await db.commit()
+    await db.refresh(db_quiz)
     
     # Link with questions
     if quiz.question_ids:
         for idx, question_id in enumerate(quiz.question_ids):
-            question = db.query(McqQuestion).filter(McqQuestion.id == question_id).first()
+            question_stmt = select(McqQuestion).where(McqQuestion.id == question_id)
+            question_result = await db.execute(question_stmt)
+            question = question_result.scalar_one_or_none()
             if question:
                 quiz_link = McqQuizQuestionLink(
                     quiz_id=db_quiz.id,
@@ -105,12 +108,14 @@ async def create_quiz(
                     display_order=idx + 1
                 )
                 db.add(quiz_link)
-        db.commit()
+        await db.commit()
     
     # Add question count
-    question_count = db.query(McqQuizQuestionLink).filter(
+    count_stmt = select(func.count(McqQuizQuestionLink.quiz_id)).where(
         McqQuizQuestionLink.quiz_id == db_quiz.id
-    ).count()
+    )
+    count_result = await db.execute(count_stmt)
+    question_count = count_result.scalar()
     
     result = McqQuizRead.from_orm(db_quiz)
     result.question_count = question_count
@@ -124,29 +129,33 @@ async def list_quizzes(
     is_public: Optional[bool] = Query(None),
     my_quizzes: bool = Query(False),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """List quizzes with filtering options."""
-    query = db.query(McqQuiz).filter(McqQuiz.is_active == True)
+    stmt = select(McqQuiz)
     
     if my_quizzes:
-        query = query.filter(McqQuiz.user_id == current_user.id)
+        stmt = stmt.where(McqQuiz.user_id == current_user.id)
     elif is_public is not None:
-        query = query.filter(McqQuiz.is_public == is_public)
+        stmt = stmt.where(McqQuiz.is_public == is_public)
     else:
         # Show public quizzes and user's own quizzes
-        query = query.filter(
-            (McqQuiz.is_public == True) | (McqQuiz.user_id == current_user.id)
+        stmt = stmt.where(
+            or_(McqQuiz.is_public == True, McqQuiz.user_id == current_user.id)
         )
     
-    quizzes = query.offset(skip).limit(limit).all()
+    stmt = stmt.offset(skip).limit(limit)
+    result_data = await db.execute(stmt)
+    quizzes = result_data.scalars().all()
     
     # Add question counts
     result = []
     for quiz in quizzes:
-        question_count = db.query(McqQuizQuestionLink).filter(
+        count_stmt = select(func.count(McqQuizQuestionLink.quiz_id)).where(
             McqQuizQuestionLink.quiz_id == quiz.id
-        ).count()
+        )
+        count_result = await db.execute(count_stmt)
+        question_count = count_result.scalar()
         
         quiz_data = McqQuizRead.from_orm(quiz)
         quiz_data.question_count = question_count
@@ -162,17 +171,20 @@ async def list_my_quiz_sessions(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """List user's quiz sessions."""
     # Using join to get quiz title with the session
-    sessions = db.query(QuizSession, McqQuiz.title)\
-        .join(McqQuiz, QuizSession.quiz_id == McqQuiz.id)\
-        .filter(QuizSession.user_id == current_user.id)\
-        .order_by(QuizSession.started_at.desc())\
-        .offset(skip)\
-        .limit(limit)\
-        .all()
+    stmt = select(QuizSession, McqQuiz.title).join(
+        McqQuiz, QuizSession.quiz_id == McqQuiz.id
+    ).where(
+        QuizSession.user_id == current_user.id
+    ).order_by(
+        QuizSession.started_at.desc()
+    ).offset(skip).limit(limit)
+    
+    result_data = await db.execute(stmt)
+    sessions = result_data.all()
     
     # Combine session with quiz title
     result = []
@@ -198,10 +210,13 @@ async def list_my_quiz_sessions(
 async def get_quiz_session(
     session_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Get quiz session details."""
-    session = db.query(QuizSession).filter(QuizSession.id == session_id).first()
+    stmt = select(QuizSession).where(QuizSession.id == session_id)
+    result = await db.execute(stmt)
+    session = result.scalar_one_or_none()
+    
     if not session:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiz session not found")
     
@@ -220,10 +235,13 @@ async def update_quiz_session(
     session_id: int,
     submission: QuizSessionSubmit,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Edit a quiz session's answers."""
-    session = db.query(QuizSession).filter(QuizSession.id == session_id).first()
+    stmt = select(QuizSession).where(QuizSession.id == session_id)
+    result = await db.execute(stmt)
+    session = result.scalar_one_or_none()
+    
     if not session:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiz session not found")
     
@@ -247,8 +265,8 @@ async def update_quiz_session(
     session.answers_json = answer_details
     session.time_taken_seconds = int((datetime.now(timezone.utc) - session.started_at).total_seconds())
         
-    db.commit()
-    db.refresh(session)
+    await db.commit()
+    await db.refresh(session)
     
     return session
 
@@ -257,10 +275,13 @@ async def update_quiz_session(
 async def delete_quiz_session(
     session_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Delete a quiz session."""
-    session = db.query(QuizSession).filter(QuizSession.id == session_id).first()
+    stmt = select(QuizSession).where(QuizSession.id == session_id)
+    result = await db.execute(stmt)
+    session = result.scalar_one_or_none()
+    
     if not session:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiz session not found")
     
@@ -271,18 +292,21 @@ async def delete_quiz_session(
             detail="Not authorized to delete this quiz session"
         )
     
-    db.delete(session)
-    db.commit()
+    await db.delete(session)
+    await db.commit()
 
 
 @router.get("/{quiz_id}", response_model=McqQuizWithQuestions)
 async def get_quiz(
     quiz_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Get a specific quiz with its questions."""
-    quiz = db.query(McqQuiz).filter(McqQuiz.id == quiz_id).first()
+    stmt = select(McqQuiz).where(McqQuiz.id == quiz_id)
+    result = await db.execute(stmt)
+    quiz = result.scalar_one_or_none()
+    
     if not quiz:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiz not found")
     
@@ -290,10 +314,15 @@ async def get_quiz(
     if not quiz.is_public and quiz.user_id != current_user.id:
         # Check if this is a community quiz and user is a member
         if quiz.community_id:
-            member = db.query(CommunityMember).filter(
-                CommunityMember.community_id == quiz.community_id,
-                CommunityMember.user_id == current_user.id
-            ).first()
+            member_stmt = select(CommunityMember).where(
+                and_(
+                    CommunityMember.community_id == quiz.community_id,
+                    CommunityMember.user_id == current_user.id
+                )
+            )
+            member_result = await db.execute(member_stmt)
+            member = member_result.scalar_one_or_none()
+            
             if not member:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
@@ -306,15 +335,22 @@ async def get_quiz(
             )
     
     # Get questions in order
-    quiz_questions = db.query(McqQuizQuestionLink).filter(
+    quiz_questions_stmt = select(McqQuizQuestionLink).where(
         McqQuizQuestionLink.quiz_id == quiz_id
-    ).order_by(McqQuizQuestionLink.display_order).all()
+    ).order_by(McqQuizQuestionLink.display_order)
+    
+    quiz_questions_result = await db.execute(quiz_questions_stmt)
+    quiz_questions = quiz_questions_result.scalars().all()
     
     questions = []
     for quiz_question in quiz_questions:
-        question = db.query(McqQuestion).options(
-            joinedload(McqQuestion.tag_links).joinedload(McqQuestionTagLink.tag)
-        ).filter(McqQuestion.id == quiz_question.question_id).first()
+        question_stmt = select(McqQuestion).options(
+            selectinload(McqQuestion.tag_links).selectinload(McqQuestionTagLink.tag)
+        ).where(McqQuestion.id == quiz_question.question_id)
+        
+        question_result = await db.execute(question_stmt)
+        question = question_result.scalar_one_or_none()
+        
         if question:
             questions.append(_convert_question_to_read(question))
     
@@ -329,10 +365,13 @@ async def update_quiz(
     quiz_id: int,
     quiz_update: McqQuizUpdate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Update a quiz."""
-    quiz = db.query(McqQuiz).filter(McqQuiz.id == quiz_id).first()
+    stmt = select(McqQuiz).where(McqQuiz.id == quiz_id)
+    result = await db.execute(stmt)
+    quiz = result.scalar_one_or_none()
+    
     if not quiz:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiz not found")
     
@@ -342,7 +381,7 @@ async def update_quiz(
         if quiz.community_id:
             community_service = CommunityService(db)
             try:
-                community_service._check_admin_or_moderator(quiz.community_id, current_user.id)
+                await community_service._check_admin_or_moderator(current_user, quiz.community_id)
             except HTTPException:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
@@ -359,50 +398,54 @@ async def update_quiz(
     for field, value in update_data.items():
         setattr(quiz, field, value)
     
-    quiz.updated_at = datetime.now(timezone.utc)
-    
-    # Update quiz questions if provided
+    # Update question links if provided
     if quiz_update.question_ids is not None:
-        # Delete existing question links
-        db.query(McqQuizQuestionLink).filter(McqQuizQuestionLink.quiz_id == quiz_id).delete()
+        # Remove existing question links
+        delete_stmt = delete(McqQuizQuestionLink).where(
+            McqQuizQuestionLink.quiz_id == quiz_id
+        )
+        await db.execute(delete_stmt)
         
         # Add new question links
-        for i, question_id in enumerate(quiz_update.question_ids):
-            # Verify question exists
-            question = db.query(McqQuestion).filter(McqQuestion.id == question_id).first()
-            if not question:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Question with ID {question_id} not found"
-                )
+        for idx, question_id in enumerate(quiz_update.question_ids):
+            question_stmt = select(McqQuestion).where(McqQuestion.id == question_id)
+            question_result = await db.execute(question_stmt)
+            question = question_result.scalar_one_or_none()
             
-            # Add question link with order
-            link = McqQuizQuestionLink(
-                quiz_id=quiz_id,
-                question_id=question_id,
-                display_order=i
-            )
-            db.add(link)
+            if question:
+                quiz_link = McqQuizQuestionLink(
+                    quiz_id=quiz_id,
+                    question_id=question_id,
+                    display_order=idx + 1
+                )
+                db.add(quiz_link)
     
-    db.commit()
-    db.refresh(quiz)
+    await db.commit()
+    await db.refresh(quiz)
     
-    # Update quiz question count
-    question_count = db.query(McqQuizQuestionLink).filter(McqQuizQuestionLink.quiz_id == quiz_id).count()
-    quiz.question_count = question_count
-    db.commit()
+    # Get updated question count
+    count_stmt = select(func.count(McqQuizQuestionLink.quiz_id)).where(
+        McqQuizQuestionLink.quiz_id == quiz_id
+    )
+    count_result = await db.execute(count_stmt)
+    question_count = count_result.scalar()
     
-    return quiz
+    result = McqQuizRead.from_orm(quiz)
+    result.question_count = question_count
+    return result
 
 
 @router.delete("/{quiz_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_quiz(
     quiz_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Delete a quiz."""
-    quiz = db.query(McqQuiz).filter(McqQuiz.id == quiz_id).first()
+    stmt = select(McqQuiz).where(McqQuiz.id == quiz_id)
+    result = await db.execute(stmt)
+    quiz = result.scalar_one_or_none()
+    
     if not quiz:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiz not found")
     
@@ -412,7 +455,7 @@ async def delete_quiz(
         if quiz.community_id:
             community_service = CommunityService(db)
             try:
-                community_service._check_admin_or_moderator(quiz.community_id, current_user.id)
+                await community_service._check_admin_or_moderator(current_user, quiz.community_id)
             except HTTPException:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
@@ -424,33 +467,36 @@ async def delete_quiz(
                 detail="Not authorized to delete this quiz"
             )
     
-    # First delete all quiz-question links
-    db.query(McqQuizQuestionLink).filter(McqQuizQuestionLink.quiz_id == quiz_id).delete()
+    # Delete question links first
+    delete_links_stmt = delete(McqQuizQuestionLink).where(
+        McqQuizQuestionLink.quiz_id == quiz_id
+    )
+    await db.execute(delete_links_stmt)
     
-    # Check if there are any active sessions for this quiz
-    active_sessions = db.query(QuizSession).filter(
-        QuizSession.quiz_id == quiz_id,
-        QuizSession.completed_at == None
-    ).all()
+    # Delete active sessions for this quiz
+    delete_sessions_stmt = delete(QuizSession).where(
+        and_(
+            QuizSession.quiz_id == quiz_id,
+            QuizSession.completed_at.is_(None)
+        )
+    )
+    await db.execute(delete_sessions_stmt)
     
-    # Delete sessions if any exist
-    if active_sessions:
-        for session in active_sessions:
-            db.delete(session)
-    
-    # Finally delete the quiz
-    db.delete(quiz)
-    db.commit()
+    await db.delete(quiz)
+    await db.commit()
 
 
 @router.post("/{quiz_id}/sessions", response_model=QuizSessionRead, status_code=status.HTTP_201_CREATED)
 async def start_quiz_session(
     quiz_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Start a new quiz session."""
-    quiz = db.query(McqQuiz).filter(McqQuiz.id == quiz_id).first()
+    stmt = select(McqQuiz).where(McqQuiz.id == quiz_id)
+    result = await db.execute(stmt)
+    quiz = result.scalar_one_or_none()
+    
     if not quiz:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiz not found")
     
@@ -458,10 +504,15 @@ async def start_quiz_session(
     if not quiz.is_public and quiz.user_id != current_user.id:
         # Check if this is a community quiz and user is a member
         if quiz.community_id:
-            member = db.query(CommunityMember).filter(
-                CommunityMember.community_id == quiz.community_id,
-                CommunityMember.user_id == current_user.id
-            ).first()
+            member_stmt = select(CommunityMember).where(
+                and_(
+                    CommunityMember.community_id == quiz.community_id,
+                    CommunityMember.user_id == current_user.id
+                )
+            )
+            member_result = await db.execute(member_stmt)
+            member = member_result.scalar_one_or_none()
+            
             if not member:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
@@ -473,18 +524,14 @@ async def start_quiz_session(
                 detail="Access denied to this quiz"
             )
     
-    # Get question count
-    question_count = db.query(McqQuizQuestionLink).filter(
+    # Get question count for this quiz
+    count_stmt = select(func.count(McqQuizQuestionLink.quiz_id)).where(
         McqQuizQuestionLink.quiz_id == quiz_id
-    ).count()
+    )
+    count_result = await db.execute(count_stmt)
+    question_count = count_result.scalar()
     
-    if question_count == 0:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Quiz has no questions"
-        )
-    
-    # Create quiz session
+    # Create new session
     session = QuizSession(
         user_id=current_user.id,
         quiz_id=quiz_id,
@@ -492,10 +539,24 @@ async def start_quiz_session(
         started_at=datetime.now(timezone.utc)
     )
     db.add(session)
-    db.commit()
-    db.refresh(session)
+    await db.commit()
+    await db.refresh(session)
     
-    return session
+    # Add quiz title for response
+    session_dict = {
+        "id": session.id,
+        "user_id": session.user_id,
+        "quiz_id": session.quiz_id,
+        "quiz_title": quiz.title,
+        "started_at": session.started_at,
+        "completed_at": session.completed_at,
+        "score": session.score,
+        "total_questions": session.total_questions,
+        "answers_json": session.answers_json,
+        "time_taken_seconds": session.time_taken_seconds
+    }
+    
+    return QuizSessionRead(**session_dict)
 
 
 @router.post("/sessions/{session_id}/submit", response_model=QuizSessionRead)
@@ -503,10 +564,13 @@ async def submit_quiz_session(
     session_id: int,
     submission: QuizSessionSubmit,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Submit answers for a quiz session."""
-    session = db.query(QuizSession).filter(QuizSession.id == session_id).first()
+    stmt = select(QuizSession).where(QuizSession.id == session_id)
+    result = await db.execute(stmt)
+    session = result.scalar_one_or_none()
+    
     if not session:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiz session not found")
     
@@ -525,15 +589,18 @@ async def submit_quiz_session(
         )
     
     # Calculate score
-    correct_answers = 0
+    score = 0
     answer_details = {}
     
     for answer in submission.answers:
-        question = db.query(McqQuestion).filter(McqQuestion.id == answer.question_id).first()
+        question_stmt = select(McqQuestion).where(McqQuestion.id == answer.question_id)
+        question_result = await db.execute(question_stmt)
+        question = question_result.scalar_one_or_none()
+        
         if question:
             is_correct = question.correct_option == answer.selected_option.value
             if is_correct:
-                correct_answers += 1
+                score += 1
             
             answer_details[str(answer.question_id)] = {
                 "selected": answer.selected_option.value,
@@ -542,21 +609,12 @@ async def submit_quiz_session(
             }
     
     # Update session
+    session.score = score
     session.completed_at = datetime.now(timezone.utc)
-    session.score = correct_answers
     session.answers_json = answer_details
     session.time_taken_seconds = int((session.completed_at - session.started_at).total_seconds())
     
-    db.commit()
-    db.refresh(session)
-    
-    # Send notification about quiz completion
-    notification_service = NotificationService(db)
-    notification_service.notify_quiz_result(
-        user_id=current_user.id,
-        quiz_id=session.quiz_id,
-        score=correct_answers,
-        total_questions=session.total_questions
-    )
+    await db.commit()
+    await db.refresh(session)
     
     return session 

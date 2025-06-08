@@ -3,8 +3,8 @@ Content analytics service for tracking engagement metrics.
 """
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict, Any
-from sqlalchemy.orm import Session
-from sqlalchemy import func, desc, and_, Integer as SQLInteger
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func, desc, and_, Integer as SQLInteger
 from fastapi import HTTPException, status
 
 from models.models import (
@@ -19,15 +19,17 @@ from schemas.analytics import (
 class ContentAnalyticsService:
     """Service for managing content analytics and engagement metrics."""
 
-    def __init__(self, db: Session):
+    def __init__(self, db: AsyncSession):
         self.db = db
 
-    def _ensure_analytics_record(self, content_type: ContentTypeEnum, content_id: int) -> ContentAnalytics:
+    async def _ensure_analytics_record(self, content_type: ContentTypeEnum, content_id: int) -> ContentAnalytics:
         """Ensure analytics record exists for content."""
-        analytics = self.db.query(ContentAnalytics).filter(
+        stmt = select(ContentAnalytics).where(
             ContentAnalytics.content_type == content_type,
             ContentAnalytics.content_id == content_id
-        ).first()
+        )
+        result = await self.db.execute(stmt)
+        analytics = result.scalar_one_or_none()
 
         if not analytics:
             analytics = ContentAnalytics(
@@ -39,22 +41,28 @@ class ContentAnalyticsService:
                 comment_count=0
             )
             self.db.add(analytics)
-            self.db.commit()
-            self.db.refresh(analytics)
+            await self.db.commit()
+            await self.db.refresh(analytics)
 
         return analytics
 
-    def _verify_content_exists(self, content_type: ContentTypeEnum, content_id: int) -> bool:
+    async def _verify_content_exists(self, content_type: ContentTypeEnum, content_id: int) -> bool:
         """Verify that content exists."""
         if content_type == ContentTypeEnum.summary:
-            return self.db.query(Summary).filter(Summary.id == content_id).first() is not None
+            stmt = select(Summary).where(Summary.id == content_id)
+            result = await self.db.execute(stmt)
+            return result.scalar_one_or_none() is not None
         elif content_type == ContentTypeEnum.quiz:
-            return self.db.query(McqQuiz).filter(McqQuiz.id == content_id).first() is not None
+            stmt = select(McqQuiz).where(McqQuiz.id == content_id)
+            result = await self.db.execute(stmt)
+            return result.scalar_one_or_none() is not None
         elif content_type == ContentTypeEnum.file:
-            return self.db.query(PhysicalFile).filter(PhysicalFile.id == content_id).first() is not None
+            stmt = select(PhysicalFile).where(PhysicalFile.id == content_id)
+            result = await self.db.execute(stmt)
+            return result.scalar_one_or_none() is not None
         return False
 
-    def increment_metric(
+    async def increment_metric(
         self,
         content_type: ContentTypeEnum,
         content_id: int,
@@ -63,14 +71,14 @@ class ContentAnalyticsService:
     ) -> ContentAnalyticsRead:
         """Increment a specific metric for content."""
         # Verify content exists
-        if not self._verify_content_exists(content_type, content_id):
+        if not await self._verify_content_exists(content_type, content_id):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"{content_type.value.title()} not found"
             )
 
         # Ensure analytics record exists
-        analytics = self._ensure_analytics_record(content_type, content_id)
+        analytics = await self._ensure_analytics_record(content_type, content_id)
 
         # Increment the specified metric
         if metric == "view":
@@ -88,24 +96,24 @@ class ContentAnalyticsService:
             )
 
         analytics.updated_at = datetime.now(timezone.utc)
-        self.db.commit()
-        self.db.refresh(analytics)
+        await self.db.commit()
+        await self.db.refresh(analytics)
 
         return ContentAnalyticsRead.from_orm(analytics)
 
-    def get_analytics(
+    async def get_analytics(
         self,
         content_type: ContentTypeEnum,
         content_id: int
     ) -> ContentAnalyticsRead:
         """Get analytics for specific content."""
-        if not self._verify_content_exists(content_type, content_id):
+        if not await self._verify_content_exists(content_type, content_id):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"{content_type.value.title()} not found"
             )
 
-        analytics = self._ensure_analytics_record(content_type, content_id)
+        analytics = await self._ensure_analytics_record(content_type, content_id)
         return ContentAnalyticsRead.from_orm(analytics)
 
     def calculate_engagement_score(self, analytics: ContentAnalytics) -> float:
@@ -132,19 +140,19 @@ class ContentAnalyticsService:
         
         return 0.0
 
-    def get_content_engagement_metrics(
+    async def get_content_engagement_metrics(
         self,
         content_type: ContentTypeEnum,
         content_id: int
     ) -> ContentEngagementMetrics:
         """Get detailed engagement metrics for content."""
-        if not self._verify_content_exists(content_type, content_id):
+        if not await self._verify_content_exists(content_type, content_id):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"{content_type.value.title()} not found"
             )
 
-        analytics = self._ensure_analytics_record(content_type, content_id)
+        analytics = await self._ensure_analytics_record(content_type, content_id)
 
         # Calculate derived metrics
         engagement_rate = self.calculate_engagement_score(analytics)
@@ -154,15 +162,17 @@ class ContentAnalyticsService:
         )
 
         # Get average rating if available
-        rating_values = self.db.query(ContentRating.rating).filter(
+        rating_stmt = select(ContentRating.rating).where(
             ContentRating.content_type == content_type,
             ContentRating.content_id == content_id
-        ).all()
+        )
+        rating_result = await self.db.execute(rating_stmt)
+        rating_values = rating_result.scalars().all()
         
         average_rating = None
         if rating_values:
             # Calculate average manually from enum values
-            total = sum(int(rating.rating.value) for rating in rating_values)
+            total = sum(int(rating.value) for rating in rating_values)
             average_rating = total / len(rating_values)
 
         # Calculate time-based metrics (simplified for now)
@@ -192,30 +202,30 @@ class ContentAnalyticsService:
             trend_percentage=trend_percentage
         )
 
-    def get_top_content(
+    async def get_top_content(
         self,
         content_type: Optional[ContentTypeEnum] = None,
         limit: int = 10,
         metric: str = "engagement"
     ) -> List[ContentAnalyticsSummary]:
         """Get top performing content based on specified metric."""
-        query = self.db.query(ContentAnalytics)
+        stmt = select(ContentAnalytics)
         
         if content_type:
-            query = query.filter(ContentAnalytics.content_type == content_type)
+            stmt = stmt.where(ContentAnalytics.content_type == content_type)
 
         # Order by specified metric
         if metric == "views":
-            query = query.order_by(desc(ContentAnalytics.view_count))
+            stmt = stmt.order_by(desc(ContentAnalytics.view_count))
         elif metric == "likes":
-            query = query.order_by(desc(ContentAnalytics.like_count))
+            stmt = stmt.order_by(desc(ContentAnalytics.like_count))
         elif metric == "comments":
-            query = query.order_by(desc(ContentAnalytics.comment_count))
+            stmt = stmt.order_by(desc(ContentAnalytics.comment_count))
         elif metric == "shares":
-            query = query.order_by(desc(ContentAnalytics.share_count))
+            stmt = stmt.order_by(desc(ContentAnalytics.share_count))
         else:  # engagement (default)
             # Order by calculated engagement score
-            query = query.order_by(
+            stmt = stmt.order_by(
                 desc(
                     ContentAnalytics.view_count +
                     ContentAnalytics.like_count * 2 +
@@ -224,7 +234,9 @@ class ContentAnalyticsService:
                 )
             )
 
-        analytics_list = query.limit(limit).all()
+        stmt = stmt.limit(limit)
+        result = await self.db.execute(stmt)
+        analytics_list = result.scalars().all()
         
         # Convert to summary format
         summaries = []
@@ -242,10 +254,8 @@ class ContentAnalyticsService:
 
         return summaries
 
-    def get_dashboard_analytics(self, user_id: Optional[int] = None) -> AnalyticsDashboard:
+    async def get_dashboard_analytics(self, user_id: Optional[int] = None) -> AnalyticsDashboard:
         """Get dashboard analytics with aggregated metrics."""
-        query = self.db.query(ContentAnalytics)
-        
         # If user_id provided, filter by user's content
         if user_id:
             # This would require joining with content tables to filter by user
@@ -253,19 +263,24 @@ class ContentAnalyticsService:
             pass
 
         # Calculate totals
-        totals = query.with_entities(
+        totals_stmt = select(
             func.count(ContentAnalytics.content_type).label('total_content'),
             func.sum(ContentAnalytics.view_count).label('total_views'),
             func.sum(ContentAnalytics.like_count).label('total_likes'),
             func.sum(ContentAnalytics.comment_count).label('total_comments'),
             func.sum(ContentAnalytics.share_count).label('total_shares')
-        ).first()
+        )
+        totals_result = await self.db.execute(totals_stmt)
+        totals = totals_result.first()
 
         # Get top content
-        top_content = self.get_top_content(limit=5)
+        top_content = await self.get_top_content(limit=5)
 
         # Get recent activity (simplified)
-        recent_analytics = query.order_by(desc(ContentAnalytics.updated_at)).limit(10).all()
+        recent_stmt = select(ContentAnalytics).order_by(desc(ContentAnalytics.updated_at)).limit(10)
+        recent_result = await self.db.execute(recent_stmt)
+        recent_analytics = recent_result.scalars().all()
+        
         recent_activity = [
             {
                 "content_type": a.content_type.value,
@@ -288,38 +303,43 @@ class ContentAnalyticsService:
             period_comparison={}  # Would implement with historical data
         )
 
-    def sync_comment_counts(self):
+    async def sync_comment_counts(self):
         """Synchronize comment counts with actual comment data."""
         # Get all content with comments
-        comment_counts = self.db.query(
+        comment_counts_stmt = select(
             ContentComment.content_type,
             ContentComment.content_id,
             func.count(ContentComment.id).label('count')
-        ).filter(
+        ).where(
             ContentComment.is_deleted == False
         ).group_by(
             ContentComment.content_type,
             ContentComment.content_id
-        ).all()
+        )
+        
+        comment_counts_result = await self.db.execute(comment_counts_stmt)
+        comment_counts = comment_counts_result.all()
 
         for content_type, content_id, count in comment_counts:
-            analytics = self._ensure_analytics_record(content_type, content_id)
+            analytics = await self._ensure_analytics_record(content_type, content_id)
             analytics.comment_count = count
             analytics.updated_at = datetime.now(timezone.utc)
 
-        self.db.commit()
+        await self.db.commit()
 
-    def cleanup_orphaned_analytics(self):
+    async def cleanup_orphaned_analytics(self):
         """Remove analytics records for content that no longer exists."""
         orphaned_count = 0
         
         # Check each analytics record
-        analytics_records = self.db.query(ContentAnalytics).all()
+        analytics_stmt = select(ContentAnalytics)
+        analytics_result = await self.db.execute(analytics_stmt)
+        analytics_records = analytics_result.scalars().all()
         
         for analytics in analytics_records:
-            if not self._verify_content_exists(analytics.content_type, analytics.content_id):
-                self.db.delete(analytics)
+            if not await self._verify_content_exists(analytics.content_type, analytics.content_id):
+                await self.db.delete(analytics)
                 orphaned_count += 1
         
-        self.db.commit()
+        await self.db.commit()
         return orphaned_count 

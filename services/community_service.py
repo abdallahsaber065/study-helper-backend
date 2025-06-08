@@ -5,8 +5,9 @@ import secrets
 import string
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
-from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload, selectinload
+from sqlalchemy import select, func
 from fastapi import HTTPException, status
 from models.models import (
     User, Community, CommunityMember, CommunitySubjectLink, 
@@ -25,26 +26,30 @@ from core.config import settings
 class CommunityService:
     """Service for managing community operations."""
 
-    def __init__(self, db: Session):
+    def __init__(self, db: AsyncSession):
         self.db = db
 
-    def _generate_community_code(self) -> str:
+    async def _generate_community_code(self) -> str:
         """Generate a unique community code."""
         while True:
             code = ''.join(secrets.choice(string.ascii_uppercase + string.digits) 
                           for _ in range(settings.community_code_length))
             
             # Check if code already exists
-            existing = self.db.query(Community).filter(Community.community_code == code).first()
+            stmt = select(Community).where(Community.community_code == code)
+            result = await self.db.execute(stmt)
+            existing = result.scalar_one_or_none()
             if not existing:
                 return code
 
-    def _check_admin_or_moderator(self, user: User, community_id: int) -> CommunityMember:
+    async def _check_admin_or_moderator(self, user: User, community_id: int) -> CommunityMember:
         """Check if user is admin or moderator of the community."""
-        membership = self.db.query(CommunityMember).filter(
+        stmt = select(CommunityMember).where(
             CommunityMember.community_id == community_id,
             CommunityMember.user_id == user.id
-        ).first()
+        )
+        result = await self.db.execute(stmt)
+        membership = result.scalar_one_or_none()
         
         if not membership or membership.role == CommunityRoleEnum.member:
             raise HTTPException(
@@ -54,12 +59,14 @@ class CommunityService:
         
         return membership
 
-    def _check_community_member(self, user: User, community_id: int) -> CommunityMember:
+    async def _check_community_member(self, user: User, community_id: int) -> CommunityMember:
         """Check if user is a member of the community."""
-        membership = self.db.query(CommunityMember).filter(
+        stmt = select(CommunityMember).where(
             CommunityMember.community_id == community_id,
             CommunityMember.user_id == user.id
-        ).first()
+        )
+        result = await self.db.execute(stmt)
+        membership = result.scalar_one_or_none()
         
         if not membership:
             raise HTTPException(
@@ -69,12 +76,12 @@ class CommunityService:
         
         return membership
 
-    def create_community(self, community_data: CommunityCreate, creator: User) -> Community:
+    async def create_community(self, community_data: CommunityCreate, creator: User) -> Community:
         """Create a new community."""
         # Check user's community creation limit
-        user_communities_count = self.db.query(Community).filter(
-            Community.creator_id == creator.id
-        ).count()
+        count_stmt = select(func.count(Community.id)).where(Community.creator_id == creator.id)
+        count_result = await self.db.execute(count_stmt)
+        user_communities_count = count_result.scalar()
         
         if user_communities_count >= settings.max_communities_per_user:
             raise HTTPException(
@@ -83,9 +90,9 @@ class CommunityService:
             )
 
         # Check if community name already exists
-        existing_community = self.db.query(Community).filter(
-            Community.name == community_data.name
-        ).first()
+        existing_stmt = select(Community).where(Community.name == community_data.name)
+        existing_result = await self.db.execute(existing_stmt)
+        existing_community = existing_result.scalar_one_or_none()
         
         if existing_community:
             raise HTTPException(
@@ -97,12 +104,12 @@ class CommunityService:
         community = Community(
             **community_data.dict(),
             creator_id=creator.id,
-            community_code=self._generate_community_code()
+            community_code=await self._generate_community_code()
         )
         
         self.db.add(community)
-        self.db.commit()
-        self.db.refresh(community)
+        await self.db.commit()
+        await self.db.refresh(community)
 
         # Add creator as admin
         membership = CommunityMember(
@@ -111,13 +118,16 @@ class CommunityService:
             role=CommunityRoleEnum.admin
         )
         self.db.add(membership)
-        self.db.commit()
+        await self.db.commit()
 
         return community
 
-    def get_community(self, community_id: int, user: User) -> Community:
+    async def get_community(self, community_id: int, user: User) -> Community:
         """Get community details with access check."""
-        community = self.db.query(Community).filter(Community.id == community_id).first()
+        stmt = select(Community).where(Community.id == community_id)
+        result = await self.db.execute(stmt)
+        community = result.scalar_one_or_none()
+        
         if not community:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -126,10 +136,12 @@ class CommunityService:
 
         # Check if user has access to private community
         if community.is_private:
-            membership = self.db.query(CommunityMember).filter(
+            membership_stmt = select(CommunityMember).where(
                 CommunityMember.community_id == community_id,
                 CommunityMember.user_id == user.id
-            ).first()
+            )
+            membership_result = await self.db.execute(membership_stmt)
+            membership = membership_result.scalar_one_or_none()
             
             if not membership:
                 raise HTTPException(
@@ -139,41 +151,46 @@ class CommunityService:
 
         return community
 
-    def list_communities(self, user: User, skip: int = 0, limit: int = 100, 
+    async def list_communities(self, user: User, skip: int = 0, limit: int = 100, 
                         my_communities: bool = False, search: Optional[str] = None) -> List[Community]:
         """List communities with filtering."""
-        query = self.db.query(Community)
-
+        
         if my_communities:
             # Get communities where user is a member
-            query = query.join(CommunityMember).filter(
+            stmt = select(Community).join(CommunityMember).where(
                 CommunityMember.user_id == user.id
             )
         else:
             # Show public communities and user's private communities
-            user_community_ids = self.db.query(CommunityMember.community_id).filter(
+            user_community_ids_stmt = select(CommunityMember.community_id).where(
                 CommunityMember.user_id == user.id
-            ).subquery()
+            )
+            user_community_ids_result = await self.db.execute(user_community_ids_stmt)
+            user_community_ids = [row[0] for row in user_community_ids_result.fetchall()]
             
-            query = query.filter(
+            stmt = select(Community).where(
                 (Community.is_private == False) | 
-                (Community.id.in_(user_community_ids.select()))
+                (Community.id.in_(user_community_ids))
             )
 
         if search:
-            query = query.filter(Community.name.ilike(f"%{search}%"))
+            stmt = stmt.where(Community.name.ilike(f"%{search}%"))
 
-        return query.offset(skip).limit(limit).all()
+        stmt = stmt.offset(skip).limit(limit)
+        result = await self.db.execute(stmt)
+        return result.scalars().all()
 
-    def update_community(self, community_id: int, update_data: CommunityUpdate, user: User) -> Community:
+    async def update_community(self, community_id: int, update_data: CommunityUpdate, user: User) -> Community:
         """Update community (admin only)."""
-        community = self.get_community(community_id, user)
+        community = await self.get_community(community_id, user)
         
         # Check if user is admin
-        membership = self.db.query(CommunityMember).filter(
+        membership_stmt = select(CommunityMember).where(
             CommunityMember.community_id == community_id,
             CommunityMember.user_id == user.id
-        ).first()
+        )
+        membership_result = await self.db.execute(membership_stmt)
+        membership = membership_result.scalar_one_or_none()
         
         if not membership or membership.role != CommunityRoleEnum.admin:
             raise HTTPException(
@@ -187,14 +204,14 @@ class CommunityService:
             setattr(community, field, value)
 
         community.updated_at = datetime.now(timezone.utc)
-        self.db.commit()
-        self.db.refresh(community)
+        await self.db.commit()
+        await self.db.refresh(community)
         
         return community
 
-    def delete_community(self, community_id: int, user: User):
+    async def delete_community(self, community_id: int, user: User):
         """Delete community (creator only)."""
-        community = self.get_community(community_id, user)
+        community = await self.get_community(community_id, user)
         
         if community.creator_id != user.id:
             raise HTTPException(
@@ -203,14 +220,14 @@ class CommunityService:
             )
 
         self.db.delete(community)
-        self.db.commit()
+        await self.db.commit()
 
-    def join_community(self, join_request: CommunityJoinRequest, user: User) -> CommunityMember:
+    async def join_community(self, join_request: CommunityJoinRequest, user: User) -> CommunityMember:
         """Join a community using community code."""
         # Check user's membership limit
-        user_memberships_count = self.db.query(CommunityMember).filter(
-            CommunityMember.user_id == user.id
-        ).count()
+        count_stmt = select(func.count(CommunityMember.id)).where(CommunityMember.user_id == user.id)
+        count_result = await self.db.execute(count_stmt)
+        user_memberships_count = count_result.scalar()
         
         if user_memberships_count >= settings.max_community_memberships_per_user:
             raise HTTPException(
@@ -219,9 +236,9 @@ class CommunityService:
             )
 
         # Find community by code
-        community = self.db.query(Community).filter(
-            Community.community_code == join_request.community_code
-        ).first()
+        stmt = select(Community).where(Community.community_code == join_request.community_code)
+        result = await self.db.execute(stmt)
+        community = result.scalar_one_or_none()
         
         if not community:
             raise HTTPException(
@@ -230,10 +247,12 @@ class CommunityService:
             )
 
         # Check if already a member
-        existing_membership = self.db.query(CommunityMember).filter(
+        membership_stmt = select(CommunityMember).where(
             CommunityMember.community_id == community.id,
             CommunityMember.user_id == user.id
-        ).first()
+        )
+        membership_result = await self.db.execute(membership_stmt)
+        existing_membership = membership_result.scalar_one_or_none()
         
         if existing_membership:
             raise HTTPException(
@@ -256,14 +275,14 @@ class CommunityService:
         )
         
         self.db.add(membership)
-        self.db.commit()
-        self.db.refresh(membership)
+        await self.db.commit()
+        await self.db.refresh(membership)
         
         return membership
 
-    def leave_community(self, community_id: int, user: User):
+    async def leave_community(self, community_id: int, user: User):
         """Leave a community."""
-        community = self.get_community(community_id, user)
+        community = await self.get_community(community_id, user)
         
         # Creator cannot leave their own community
         if community.creator_id == user.id:
@@ -272,10 +291,12 @@ class CommunityService:
                 detail="Community creator cannot leave. Transfer ownership or delete the community."
             )
 
-        membership = self.db.query(CommunityMember).filter(
+        membership_stmt = select(CommunityMember).where(
             CommunityMember.community_id == community_id,
             CommunityMember.user_id == user.id
-        ).first()
+        )
+        membership_result = await self.db.execute(membership_stmt)
+        membership = membership_result.scalar_one_or_none()
         
         if not membership:
             raise HTTPException(
@@ -284,37 +305,41 @@ class CommunityService:
             )
 
         self.db.delete(membership)
-        self.db.commit()
+        await self.db.commit()
 
-    def get_community_members(self, community_id: int, user: User) -> List[CommunityMember]:
+    async def get_community_members(self, community_id: int, user: User) -> List[CommunityMember]:
         """Get community members."""
         # Check access
-        self._check_community_member(user, community_id)
+        await self._check_community_member(user, community_id)
         
-        members = self.db.query(CommunityMember).options(
-            joinedload(CommunityMember.user)
-        ).filter(CommunityMember.community_id == community_id).all()
+        stmt = select(CommunityMember).options(
+            selectinload(CommunityMember.user)
+        ).where(CommunityMember.community_id == community_id)
+        result = await self.db.execute(stmt)
+        members = result.scalars().all()
         
         return members
 
-    def update_member_role(self, community_id: int, target_user_id: int, 
-                          role_update: CommunityMemberUpdate, user: User) -> CommunityMember:
+    async def update_member_role(self, community_id: int, target_user_id: int, 
+                              role_update: CommunityMemberUpdate, user: User) -> CommunityMember:
         """Update member role (admin only)."""
         # Check if current user is admin
-        self._check_admin_or_moderator(user, community_id)
+        await self._check_admin_or_moderator(user, community_id)
         
         # Cannot change creator's role
-        community = self.get_community(community_id, user)
+        community = await self.get_community(community_id, user)
         if target_user_id == community.creator_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Cannot change community creator's role"
             )
 
-        membership = self.db.query(CommunityMember).filter(
+        membership_stmt = select(CommunityMember).where(
             CommunityMember.community_id == community_id,
             CommunityMember.user_id == target_user_id
-        ).first()
+        )
+        membership_result = await self.db.execute(membership_stmt)
+        membership = membership_result.scalar_one_or_none()
         
         if not membership:
             raise HTTPException(
@@ -323,28 +348,30 @@ class CommunityService:
             )
 
         membership.role = role_update.role
-        self.db.commit()
-        self.db.refresh(membership)
+        await self.db.commit()
+        await self.db.refresh(membership)
         
         return membership
 
-    def remove_member(self, community_id: int, target_user_id: int, user: User):
+    async def remove_member(self, community_id: int, target_user_id: int, user: User):
         """Remove member from community (admin only)."""
         # Check if current user is admin
-        self._check_admin_or_moderator(user, community_id)
+        await self._check_admin_or_moderator(user, community_id)
         
         # Cannot remove creator
-        community = self.get_community(community_id, user)
+        community = await self.get_community(community_id, user)
         if target_user_id == community.creator_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Cannot remove community creator"
             )
 
-        membership = self.db.query(CommunityMember).filter(
+        membership_stmt = select(CommunityMember).where(
             CommunityMember.community_id == community_id,
             CommunityMember.user_id == target_user_id
-        ).first()
+        )
+        membership_result = await self.db.execute(membership_stmt)
+        membership = membership_result.scalar_one_or_none()
         
         if not membership:
             raise HTTPException(
@@ -353,16 +380,18 @@ class CommunityService:
             )
 
         self.db.delete(membership)
-        self.db.commit()
+        await self.db.commit()
 
-    def add_subject_to_community(self, community_id: int, subject_link: CommunitySubjectLinkCreate, 
-                                user: User) -> CommunitySubjectLink:
+    async def add_subject_to_community(self, community_id: int, subject_link: CommunitySubjectLinkCreate, 
+                                    user: User) -> CommunitySubjectLink:
         """Add subject to community (admin/moderator only)."""
         # Check permissions
-        self._check_admin_or_moderator(user, community_id)
+        await self._check_admin_or_moderator(user, community_id)
         
         # Check if subject exists
-        subject = self.db.query(Subject).filter(Subject.id == subject_link.subject_id).first()
+        stmt = select(Subject).where(Subject.id == subject_link.subject_id)
+        result = await self.db.execute(stmt)
+        subject = result.scalar_one_or_none()
         if not subject:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -370,10 +399,12 @@ class CommunityService:
             )
 
         # Check if already linked
-        existing_link = self.db.query(CommunitySubjectLink).filter(
+        existing_stmt = select(CommunitySubjectLink).where(
             CommunitySubjectLink.community_id == community_id,
             CommunitySubjectLink.subject_id == subject_link.subject_id
-        ).first()
+        )
+        existing_result = await self.db.execute(existing_stmt)
+        existing_link = existing_result.scalar_one_or_none()
         
         if existing_link:
             raise HTTPException(
@@ -389,20 +420,22 @@ class CommunityService:
         )
         
         self.db.add(link)
-        self.db.commit()
-        self.db.refresh(link)
+        await self.db.commit()
+        await self.db.refresh(link)
         
         return link
 
-    def remove_subject_from_community(self, community_id: int, subject_id: int, user: User):
+    async def remove_subject_from_community(self, community_id: int, subject_id: int, user: User):
         """Remove subject from community (admin/moderator only)."""
         # Check permissions
-        self._check_admin_or_moderator(user, community_id)
+        await self._check_admin_or_moderator(user, community_id)
         
-        link = self.db.query(CommunitySubjectLink).filter(
+        stmt = select(CommunitySubjectLink).where(
             CommunitySubjectLink.community_id == community_id,
             CommunitySubjectLink.subject_id == subject_id
-        ).first()
+        )
+        result = await self.db.execute(stmt)
+        link = result.scalar_one_or_none()
         
         if not link:
             raise HTTPException(
@@ -411,31 +444,35 @@ class CommunityService:
             )
 
         self.db.delete(link)
-        self.db.commit()
+        await self.db.commit()
 
-    def get_community_subjects(self, community_id: int, user: User) -> List[CommunitySubjectLink]:
+    async def get_community_subjects(self, community_id: int, user: User) -> List[CommunitySubjectLink]:
         """Get subjects linked to community."""
         # Check access
-        self._check_community_member(user, community_id)
+        await self._check_community_member(user, community_id)
         
-        subjects = self.db.query(CommunitySubjectLink).options(
-            joinedload(CommunitySubjectLink.subject),
-            joinedload(CommunitySubjectLink.added_by_user)
-        ).filter(CommunitySubjectLink.community_id == community_id).all()
+        stmt = select(CommunitySubjectLink).options(
+            selectinload(CommunitySubjectLink.subject),
+            selectinload(CommunitySubjectLink.added_by_user)
+        ).where(CommunitySubjectLink.community_id == community_id)
+        result = await self.db.execute(stmt)
+        subjects = result.scalars().all()
         
         return subjects
 
-    def add_file_to_community_subject(self, community_id: int, file_data: CommunitySubjectFileCreate, 
-                                     user: User) -> CommunitySubjectFile:
+    async def add_file_to_community_subject(self, community_id: int, file_data: CommunitySubjectFileCreate, 
+                                         user: User) -> CommunitySubjectFile:
         """Add file to community subject (admin/moderator only)."""
         # Check permissions
-        self._check_admin_or_moderator(user, community_id)
+        await self._check_admin_or_moderator(user, community_id)
         
         # Check if subject is linked to community
-        subject_link = self.db.query(CommunitySubjectLink).filter(
+        stmt = select(CommunitySubjectLink).where(
             CommunitySubjectLink.community_id == community_id,
             CommunitySubjectLink.subject_id == file_data.subject_id
-        ).first()
+        )
+        result = await self.db.execute(stmt)
+        subject_link = result.scalar_one_or_none()
         
         if not subject_link:
             raise HTTPException(
@@ -444,10 +481,12 @@ class CommunityService:
             )
 
         # Check if file exists and user has access
-        file_access = self.db.query(UserFileAccess).filter(
+        stmt = select(UserFileAccess).where(
             UserFileAccess.user_id == user.id,
             UserFileAccess.physical_file_id == file_data.physical_file_id
-        ).first()
+        )
+        result = await self.db.execute(stmt)
+        file_access = result.scalar_one_or_none()
         
         if not file_access:
             raise HTTPException(
@@ -456,11 +495,13 @@ class CommunityService:
             )
 
         # Check if file already linked
-        existing_file = self.db.query(CommunitySubjectFile).filter(
+        existing_stmt = select(CommunitySubjectFile).where(
             CommunitySubjectFile.community_id == community_id,
             CommunitySubjectFile.subject_id == file_data.subject_id,
             CommunitySubjectFile.physical_file_id == file_data.physical_file_id
-        ).first()
+        )
+        existing_result = await self.db.execute(existing_stmt)
+        existing_file = existing_result.scalar_one_or_none()
         
         if existing_file:
             raise HTTPException(
@@ -479,56 +520,58 @@ class CommunityService:
         )
         
         self.db.add(community_file)
-        self.db.commit()
-        self.db.refresh(community_file)
+        await self.db.commit()
+        await self.db.refresh(community_file)
         
         return community_file
 
-    def get_community_subject_files(self, community_id: int, subject_id: int, user: User) -> List[CommunitySubjectFile]:
+    async def get_community_subject_files(self, community_id: int, subject_id: int, user: User) -> List[CommunitySubjectFile]:
         """Get files for a specific subject in community."""
         # Check access
-        self._check_community_member(user, community_id)
+        await self._check_community_member(user, community_id)
         
-        files = self.db.query(CommunitySubjectFile).options(
-            joinedload(CommunitySubjectFile.physical_file),
-            joinedload(CommunitySubjectFile.subject),
-            joinedload(CommunitySubjectFile.uploaded_by_user)
-        ).filter(
+        stmt = select(CommunitySubjectFile).options(
+            selectinload(CommunitySubjectFile.physical_file),
+            selectinload(CommunitySubjectFile.subject),
+            selectinload(CommunitySubjectFile.uploaded_by_user)
+        ).where(
             CommunitySubjectFile.community_id == community_id,
             CommunitySubjectFile.subject_id == subject_id
-        ).all()
+        )
+        result = await self.db.execute(stmt)
+        files = result.scalars().all()
         
         return files
 
-    def get_community_stats(self, community_id: int, user: User) -> dict:
+    async def get_community_stats(self, community_id: int, user: User) -> dict:
         """Get community statistics."""
         # Check access
-        self._check_community_member(user, community_id)
+        await self._check_community_member(user, community_id)
         
         # Count members
-        member_count = self.db.query(CommunityMember).filter(
-            CommunityMember.community_id == community_id
-        ).count()
+        stmt = select(func.count(CommunityMember.id)).where(CommunityMember.community_id == community_id)
+        result = await self.db.execute(stmt)
+        member_count = result.scalar()
         
         # Count subjects
-        subject_count = self.db.query(CommunitySubjectLink).filter(
-            CommunitySubjectLink.community_id == community_id
-        ).count()
+        stmt = select(func.count(CommunitySubjectLink.id)).where(CommunitySubjectLink.community_id == community_id)
+        result = await self.db.execute(stmt)
+        subject_count = result.scalar()
         
         # Count files
-        file_count = self.db.query(CommunitySubjectFile).filter(
-            CommunitySubjectFile.community_id == community_id
-        ).count()
+        stmt = select(func.count(CommunitySubjectFile.id)).where(CommunitySubjectFile.community_id == community_id)
+        result = await self.db.execute(stmt)
+        file_count = result.scalar()
         
         # Count quizzes
-        quiz_count = self.db.query(McqQuiz).filter(
-            McqQuiz.community_id == community_id
-        ).count()
+        stmt = select(func.count(McqQuiz.id)).where(McqQuiz.community_id == community_id)
+        result = await self.db.execute(stmt)
+        quiz_count = result.scalar()
         
         # Count summaries
-        summary_count = self.db.query(Summary).filter(
-            Summary.community_id == community_id
-        ).count()
+        stmt = select(func.count(Summary.id)).where(Summary.community_id == community_id)
+        result = await self.db.execute(stmt)
+        summary_count = result.scalar()
         
         return {
             "total_members": member_count,

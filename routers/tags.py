@@ -1,114 +1,172 @@
 """
-Router for MCQ and Quiz functionality.
+Router for Question Tags Management.
 """
-from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy.orm import Session
-from db_config import get_db
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func, or_
+from sqlalchemy.orm import selectinload
+
+from db_config import get_async_db
 from core.security import get_current_user
 from models.models import (
-    User, QuestionTag,
+    User, QuestionTag, McqQuestion, McqQuestionTagLink
 )
-from schemas.mcq import (
-    # Tag schemas
-    QuestionTagCreate, QuestionTagRead, QuestionTagUpdate,
-)
+from schemas.mcq import QuestionTagCreate, QuestionTagRead, QuestionTagUpdate
 
-router = APIRouter(prefix="/tags", tags=["Tags"])
+router = APIRouter(prefix="/tags", tags=["Question Tags"])
 
-# ============ Question Tag Endpoints ============
 
-@router.post("/tags", response_model=QuestionTagRead, status_code=status.HTTP_201_CREATED)
+@router.post("/", response_model=QuestionTagRead, status_code=status.HTTP_201_CREATED)
 async def create_tag(
-    tag: QuestionTagCreate,
+    tag_data: QuestionTagCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Create a new question tag."""
-    # Check if tag already exists
-    existing_tag = db.query(QuestionTag).filter(QuestionTag.name == tag.name).first()
+    # Check if tag with same name already exists
+    stmt = select(QuestionTag).where(QuestionTag.name == tag_data.name)
+    result = await db.execute(stmt)
+    existing_tag = result.scalar_one_or_none()
+    
     if existing_tag:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Tag with this name already exists"
+            detail=f"Tag with name '{tag_data.name}' already exists"
         )
     
-    db_tag = QuestionTag(**tag.dict())
-    db.add(db_tag)
-    db.commit()
-    db.refresh(db_tag)
-    return db_tag
+    # Create new tag
+    new_tag = QuestionTag(
+        name=tag_data.name,
+        description=tag_data.description
+    )
+    
+    db.add(new_tag)
+    await db.commit()
+    await db.refresh(new_tag)
+    
+    return QuestionTagRead.from_orm(new_tag)
 
 
-@router.get("/tags", response_model=List[QuestionTagRead])
+@router.get("/", response_model=List[QuestionTagRead])
 async def list_tags(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=100),
-    search: Optional[str] = Query(None),
-    db: Session = Depends(get_db)
+    search: Optional[str] = Query(None, description="Search tags by name or description"),
+    db: AsyncSession = Depends(get_async_db)
 ):
-    """List all question tags."""
-    query = db.query(QuestionTag)
+    """Get all question tags with optional search."""
+    stmt = select(QuestionTag)
     
+    # Apply search filter
     if search:
-        query = query.filter(QuestionTag.name.ilike(f"%{search}%"))
+        search_filter = or_(
+            QuestionTag.name.ilike(f"%{search}%"),
+            QuestionTag.description.ilike(f"%{search}%")
+        )
+        stmt = stmt.where(search_filter)
     
-    tags = query.offset(skip).limit(limit).all()
-    return tags
+    # Apply pagination and ordering
+    stmt = stmt.offset(skip).limit(limit).order_by(QuestionTag.name)
+    
+    result = await db.execute(stmt)
+    tags = result.scalars().all()
+    
+    return [QuestionTagRead.from_orm(tag) for tag in tags]
 
 
-@router.get("/tags/{tag_id}", response_model=QuestionTagRead)
-async def get_tag(tag_id: int, db: Session = Depends(get_db)):
-    """Get a specific question tag."""
-    tag = db.query(QuestionTag).filter(QuestionTag.id == tag_id).first()
+@router.get("/{tag_id}", response_model=QuestionTagRead)
+async def get_tag(tag_id: int, db: AsyncSession = Depends(get_async_db)):
+    """Get a specific tag by ID."""
+    stmt = select(QuestionTag).where(QuestionTag.id == tag_id)
+    result = await db.execute(stmt)
+    tag = result.scalar_one_or_none()
+    
     if not tag:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tag not found")
-    return tag
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tag not found"
+        )
+    
+    return QuestionTagRead.from_orm(tag)
 
 
-@router.put("/tags/{tag_id}", response_model=QuestionTagRead)
+@router.put("/{tag_id}", response_model=QuestionTagRead)
 async def update_tag(
     tag_id: int,
-    tag_update: QuestionTagUpdate,
+    update_data: QuestionTagUpdate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Update a question tag."""
-    tag = db.query(QuestionTag).filter(QuestionTag.id == tag_id).first()
+    # Get the tag
+    stmt = select(QuestionTag).where(QuestionTag.id == tag_id)
+    result = await db.execute(stmt)
+    tag = result.scalar_one_or_none()
+    
     if not tag:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tag not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tag not found"
+        )
     
     # Check if new name conflicts with existing tag
-    if tag_update.name and tag_update.name != tag.name:
-        existing_tag = db.query(QuestionTag).filter(QuestionTag.name == tag_update.name).first()
+    if update_data.name and update_data.name != tag.name:
+        name_check_stmt = select(QuestionTag).where(
+            QuestionTag.name == update_data.name,
+            QuestionTag.id != tag_id
+        )
+        name_check_result = await db.execute(name_check_stmt)
+        existing_tag = name_check_result.scalar_one_or_none()
+        
         if existing_tag:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Tag with this name already exists"
+                detail=f"Tag with name '{update_data.name}' already exists"
             )
     
-    update_data = tag_update.dict(exclude_unset=True)
-    for field, value in update_data.items():
+    # Update tag fields
+    update_dict = update_data.dict(exclude_unset=True)
+    for field, value in update_dict.items():
         setattr(tag, field, value)
     
-    tag.updated_at = datetime.now(timezone.utc)
-    db.commit()
-    db.refresh(tag)
-    return tag
+    await db.commit()
+    await db.refresh(tag)
+    
+    return QuestionTagRead.from_orm(tag)
 
 
-@router.delete("/tags/{tag_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{tag_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_tag(
     tag_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Delete a question tag."""
-    tag = db.query(QuestionTag).filter(QuestionTag.id == tag_id).first()
-    if not tag:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tag not found")
+    # Get the tag
+    stmt = select(QuestionTag).where(QuestionTag.id == tag_id)
+    result = await db.execute(stmt)
+    tag = result.scalar_one_or_none()
     
-    db.delete(tag)
-    db.commit()
+    if not tag:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tag not found"
+        )
+    
+    # Check if tag is being used by questions
+    usage_stmt = select(func.count(McqQuestionTagLink.question_id)).where(
+        McqQuestionTagLink.tag_id == tag_id
+    )
+    usage_result = await db.execute(usage_stmt)
+    usage_count = usage_result.scalar()
+    
+    if usage_count > 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot delete tag. It is being used by {usage_count} question(s)"
+        )
+    
+    await db.delete(tag)
+    await db.commit()
 

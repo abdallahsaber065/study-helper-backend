@@ -4,12 +4,13 @@ File upload and management routes.
 import os
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query
-from sqlalchemy.orm import Session
-from sqlalchemy import or_
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+from sqlalchemy import or_, select, and_, delete
 
 from core.security import get_current_active_user
 from core.file_utils import save_upload_file, validate_file_type, validate_file_size
-from db_config import get_db
+from db_config import get_async_db
 from models.models import User, PhysicalFile, UserFileAccess
 from schemas.file import FileRead, FileUploadResponse, UserFileAccessCreate, UserFileAccessRead, FileAccessList
 
@@ -20,7 +21,7 @@ router = APIRouter(prefix="/files", tags=["Files"])
 async def upload_file(
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """
     Upload a file.
@@ -54,14 +55,18 @@ async def upload_file(
     file_path, file_hash, file_size, mime_type = await save_upload_file(file)
     
     # Check if file already exists (by hash)
-    existing_file = db.query(PhysicalFile).filter(PhysicalFile.file_hash == file_hash).first()
+    existing_file_stmt = select(PhysicalFile).where(PhysicalFile.file_hash == file_hash)
+    existing_file_result = await db.execute(existing_file_stmt)
+    existing_file = existing_file_result.scalar_one_or_none()
     
     if existing_file:
         # Check if current user already has access to this file
-        existing_access = db.query(UserFileAccess).filter(
+        access_stmt = select(UserFileAccess).where(
             UserFileAccess.user_id == current_user.id,
             UserFileAccess.physical_file_id == existing_file.id
-        ).first()
+        )
+        access_result = await db.execute(access_stmt)
+        existing_access = access_result.scalar_one_or_none()
         
         if not existing_access:
             # Grant access to existing file
@@ -72,7 +77,7 @@ async def upload_file(
                 granted_by_user_id=existing_file.user_id  # Original uploader grants access
             )
             db.add(new_access)
-            db.commit()
+            await db.commit()
         
         return FileUploadResponse(
             message="File already exists. Access granted.",
@@ -91,8 +96,8 @@ async def upload_file(
     )
     
     db.add(new_file)
-    db.commit()
-    db.refresh(new_file)
+    await db.commit()
+    await db.refresh(new_file)
     
     # Create access record for the uploader
     user_access = UserFileAccess(
@@ -103,7 +108,7 @@ async def upload_file(
     )
     
     db.add(user_access)
-    db.commit()
+    await db.commit()
     
     return FileUploadResponse(
         message="File uploaded successfully",
@@ -117,25 +122,28 @@ async def get_user_files(
     limit: int = Query(100, ge=1, le=100, description="Number of files to return"),
     search: Optional[str] = Query(None, description="Search by filename"),
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """
     Get list of files accessible to the current user.
     """
     # Query files the user has access to
-    query = db.query(PhysicalFile).join(
+    stmt = select(PhysicalFile).join(
         UserFileAccess,
         PhysicalFile.id == UserFileAccess.physical_file_id
-    ).filter(
+    ).where(
         UserFileAccess.user_id == current_user.id
     )
     
     # Apply search filter
     if search:
         search_term = f"%{search}%"
-        query = query.filter(PhysicalFile.file_name.ilike(search_term))
+        stmt = stmt.where(PhysicalFile.file_name.ilike(search_term))
     
-    files = query.order_by(PhysicalFile.uploaded_at.desc()).offset(skip).limit(limit).all()
+    stmt = stmt.order_by(PhysicalFile.uploaded_at.desc()).offset(skip).limit(limit)
+    result = await db.execute(stmt)
+    files = result.scalars().all()
+    
     return files
 
 
@@ -143,19 +151,22 @@ async def get_user_files(
 async def get_file_by_id(
     file_id: int,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """
     Get a specific file by ID.
     """
     # Query the file and check access
-    file = db.query(PhysicalFile).join(
+    stmt = select(PhysicalFile).join(
         UserFileAccess,
         PhysicalFile.id == UserFileAccess.physical_file_id
-    ).filter(
+    ).where(
         PhysicalFile.id == file_id,
         UserFileAccess.user_id == current_user.id
-    ).first()
+    )
+    
+    result = await db.execute(stmt)
+    file = result.scalar_one_or_none()
     
     if not file:
         raise HTTPException(
@@ -172,17 +183,19 @@ async def share_file(
     user_id: int = Form(..., description="ID of the user to share with"),
     access_level: str = Form("read", description="Access level (read, write, admin)"),
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """
     Share a file with another user.
     """
     # Check if file exists and current user has admin access
-    file_access = db.query(UserFileAccess).filter(
+    access_stmt = select(UserFileAccess).where(
         UserFileAccess.physical_file_id == file_id,
         UserFileAccess.user_id == current_user.id,
         UserFileAccess.access_level == "admin"
-    ).first()
+    )
+    access_result = await db.execute(access_stmt)
+    file_access = access_result.scalar_one_or_none()
     
     if not file_access:
         raise HTTPException(
@@ -191,32 +204,37 @@ async def share_file(
         )
     
     # Check if target user exists
-    target_user = db.query(User).filter(User.id == user_id).first()
+    user_stmt = select(User).where(User.id == user_id)
+    user_result = await db.execute(user_stmt)
+    target_user = user_result.scalar_one_or_none()
+    
     if not target_user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
+            detail="Target user not found"
         )
     
     # Validate access level
     if access_level not in ["read", "write", "admin"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid access level. Must be 'read', 'write', or 'admin'"
+            detail="Invalid access level. Must be one of: read, write, admin"
         )
     
-    # Check if access already exists
-    existing_access = db.query(UserFileAccess).filter(
+    # Check if user already has access
+    existing_access_stmt = select(UserFileAccess).where(
         UserFileAccess.physical_file_id == file_id,
         UserFileAccess.user_id == user_id
-    ).first()
+    )
+    existing_access_result = await db.execute(existing_access_stmt)
+    existing_access = existing_access_result.scalar_one_or_none()
     
     if existing_access:
         # Update existing access
         existing_access.access_level = access_level
         existing_access.granted_by_user_id = current_user.id
-        db.commit()
-        db.refresh(existing_access)
+        await db.commit()
+        await db.refresh(existing_access)
         return existing_access
     
     # Create new access
@@ -228,8 +246,8 @@ async def share_file(
     )
     
     db.add(new_access)
-    db.commit()
-    db.refresh(new_access)
+    await db.commit()
+    await db.refresh(new_access)
     
     return new_access
 
@@ -239,46 +257,49 @@ async def revoke_file_access(
     file_id: int,
     user_id: int,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """
-    Revoke a user's access to a file.
+    Revoke access to a file from a user.
     """
-    # Check if file exists and current user has admin access
-    file_access = db.query(UserFileAccess).filter(
+    # Check if current user has admin access to the file
+    admin_access_stmt = select(UserFileAccess).where(
         UserFileAccess.physical_file_id == file_id,
         UserFileAccess.user_id == current_user.id,
         UserFileAccess.access_level == "admin"
-    ).first()
+    )
+    admin_access_result = await db.execute(admin_access_stmt)
+    admin_access = admin_access_result.scalar_one_or_none()
     
-    if not file_access:
+    if not admin_access:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You don't have admin access to this file"
         )
     
-    # Cannot revoke your own access
+    # Don't allow revoking own access
     if user_id == current_user.id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="You cannot revoke your own access"
+            detail="Cannot revoke your own access"
         )
     
     # Find the access to revoke
-    access_to_revoke = db.query(UserFileAccess).filter(
+    access_to_revoke_stmt = select(UserFileAccess).where(
         UserFileAccess.physical_file_id == file_id,
         UserFileAccess.user_id == user_id
-    ).first()
+    )
+    access_to_revoke_result = await db.execute(access_to_revoke_stmt)
+    access_to_revoke = access_to_revoke_result.scalar_one_or_none()
     
     if not access_to_revoke:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="File access not found"
+            detail="User doesn't have access to this file"
         )
     
-    # Delete the access
-    db.delete(access_to_revoke)
-    db.commit()
+    await db.delete(access_to_revoke)
+    await db.commit()
     
     return {"message": "File access revoked successfully"}
 
@@ -287,26 +308,32 @@ async def revoke_file_access(
 async def get_file_access_list(
     file_id: int,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """
-    Get a list of users who have access to a file.
+    Get list of users who have access to a file.
     """
-    # Check if file exists and current user has access
-    file_access = db.query(UserFileAccess).filter(
+    # Check if current user has access to the file
+    user_access_stmt = select(UserFileAccess).where(
         UserFileAccess.physical_file_id == file_id,
         UserFileAccess.user_id == current_user.id
-    ).first()
+    )
+    user_access_result = await db.execute(user_access_stmt)
+    user_access = user_access_result.scalar_one_or_none()
     
-    if not file_access:
+    if not user_access:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You don't have access to this file"
         )
     
-    # Get list of access entries
-    access_list = db.query(UserFileAccess).filter(
-        UserFileAccess.physical_file_id == file_id
-    ).all()
+    # Get all users with access to this file
+    access_list_stmt = select(UserFileAccess).options(
+        selectinload(UserFileAccess.user),
+        selectinload(UserFileAccess.granted_by)
+    ).where(UserFileAccess.physical_file_id == file_id)
+    
+    access_list_result = await db.execute(access_list_stmt)
+    access_list = access_list_result.scalars().all()
     
     return access_list 

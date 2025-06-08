@@ -4,12 +4,13 @@ API key management routes.
 from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import select, func, and_
 
 from core.security import get_current_active_user, encrypt_api_key
 from core.logging import get_logger
-from db_config import get_db
+from db_config import get_async_db
 from models.models import User, AiApiKey, AiProviderEnum, GeminiFileCache
 from schemas.ai_cache import (
     AiApiKeyCreate, 
@@ -29,7 +30,7 @@ logger = get_logger("api_keys")
 async def create_api_key(
     api_key_data: AiApiKeyCreate,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """
     Create a new API key for the current user.
@@ -97,8 +98,8 @@ async def create_api_key(
     
     try:
         db.add(db_api_key)
-        db.commit()
-        db.refresh(db_api_key)
+        await db.commit()
+        await db.refresh(db_api_key)
         
         logger.info(
             "API key created", 
@@ -109,7 +110,7 @@ async def create_api_key(
         
         return db_api_key
     except IntegrityError as e:
-        db.rollback()
+        await db.rollback()
         logger.error(
             "Failed to create API key - database error", 
             error=str(e), 
@@ -127,20 +128,20 @@ async def list_api_keys(
     provider: Optional[str] = Query(None, description="Filter by provider name"),
     is_active: Optional[bool] = Query(None, description="Filter by active status"),
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """
     List all API keys for the current user.
     
     Optionally filter by provider name and active status.
     """
-    query = db.query(AiApiKey).filter(AiApiKey.user_id == current_user.id)
+    stmt = select(AiApiKey).where(AiApiKey.user_id == current_user.id)
     
     # Apply filters if provided
     if provider:
         try:
             provider_enum = AiProviderEnum(provider)
-            query = query.filter(AiApiKey.provider_name == provider_enum)
+            stmt = stmt.where(AiApiKey.provider_name == provider_enum)
         except ValueError:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -148,11 +149,20 @@ async def list_api_keys(
             )
     
     if is_active is not None:
-        query = query.filter(AiApiKey.is_active == is_active)
+        stmt = stmt.where(AiApiKey.is_active == is_active)
     
     # Get total count and results
-    total = query.count()
-    api_keys = query.all()
+    count_stmt = select(func.count(AiApiKey.id)).where(AiApiKey.user_id == current_user.id)
+    if provider:
+        count_stmt = count_stmt.where(AiApiKey.provider_name == provider_enum)
+    if is_active is not None:
+        count_stmt = count_stmt.where(AiApiKey.is_active == is_active)
+    
+    count_result = await db.execute(count_stmt)
+    total = count_result.scalar()
+    
+    result = await db.execute(stmt)
+    api_keys = result.scalars().all()
     
     logger.info(
         "API keys listed", 
@@ -170,15 +180,19 @@ async def list_api_keys(
 async def get_api_key(
     api_key_id: int,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """
     Get a specific API key by ID.
     """
-    api_key = db.query(AiApiKey).filter(
-        AiApiKey.id == api_key_id,
-        AiApiKey.user_id == current_user.id
-    ).first()
+    stmt = select(AiApiKey).where(
+        and_(
+            AiApiKey.id == api_key_id,
+            AiApiKey.user_id == current_user.id
+        )
+    )
+    result = await db.execute(stmt)
+    api_key = result.scalar_one_or_none()
     
     if not api_key:
         raise HTTPException(
@@ -194,17 +208,21 @@ async def update_api_key(
     api_key_id: int,
     api_key_data: AiApiKeyUpdate,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """
     Update an API key.
     
     Can update the API key value, provider name, and active status.
     """
-    api_key = db.query(AiApiKey).filter(
-        AiApiKey.id == api_key_id,
-        AiApiKey.user_id == current_user.id
-    ).first()
+    stmt = select(AiApiKey).where(
+        and_(
+            AiApiKey.id == api_key_id,
+            AiApiKey.user_id == current_user.id
+        )
+    )
+    result = await db.execute(stmt)
+    api_key = result.scalar_one_or_none()
     
     if not api_key:
         raise HTTPException(
@@ -270,8 +288,8 @@ async def update_api_key(
     api_key.updated_at = datetime.now(timezone.utc)
     
     try:
-        db.commit()
-        db.refresh(api_key)
+        await db.commit()
+        await db.refresh(api_key)
         
         logger.info(
             "API key updated", 
@@ -282,7 +300,7 @@ async def update_api_key(
         
         return api_key
     except IntegrityError as e:
-        db.rollback()
+        await db.rollback()
         logger.error(
             "Failed to update API key - database error", 
             error=str(e), 
@@ -299,17 +317,21 @@ async def update_api_key(
 async def delete_api_key(
     api_key_id: int,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """
     Delete an API key.
     
     This will also delete any associated cached files in the gemini_file_cache table.
     """
-    api_key = db.query(AiApiKey).filter(
-        AiApiKey.id == api_key_id,
-        AiApiKey.user_id == current_user.id
-    ).first()
+    stmt = select(AiApiKey).where(
+        and_(
+            AiApiKey.id == api_key_id,
+            AiApiKey.user_id == current_user.id
+        )
+    )
+    result = await db.execute(stmt)
+    api_key = result.scalar_one_or_none()
     
     if not api_key:
         raise HTTPException(
@@ -319,16 +341,18 @@ async def delete_api_key(
     
     try:
         # First delete any associated cache entries
-        cache_entries = db.query(GeminiFileCache).filter(
+        cache_stmt = select(GeminiFileCache).where(
             GeminiFileCache.api_key_id == api_key_id
-        ).all()
+        )
+        cache_result = await db.execute(cache_stmt)
+        cache_entries = cache_result.scalars().all()
         
         for entry in cache_entries:
-            db.delete(entry)
+            await db.delete(entry)
         
         # Then delete the API key
-        db.delete(api_key)
-        db.commit()
+        await db.delete(api_key)
+        await db.commit()
         
         logger.info(
             "API key deleted", 
@@ -339,7 +363,7 @@ async def delete_api_key(
         )
         
     except Exception as e:
-        db.rollback()
+        await db.rollback()
         logger.error(
             "Failed to delete API key", 
             error=str(e), 

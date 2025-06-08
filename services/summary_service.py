@@ -3,7 +3,8 @@ Summary generation service for handling AI-powered summaries.
 """
 
 from typing import List, Optional
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from fastapi import HTTPException, status
 from pydantic import BaseModel, Field
 
@@ -27,7 +28,7 @@ class SummaryGeneratorService:
     Service for generating summaries using AI.
     """
 
-    def __init__(self, db: Session):
+    def __init__(self, db: AsyncSession):
         self.db = db
         self.ai_manager = AIManager(db)
 
@@ -93,13 +94,13 @@ class SummaryGeneratorService:
             new_summary.community_id = community_id
 
         self.db.add(new_summary)
-        self.db.commit()
-        self.db.refresh(new_summary)
+        await self.db.commit()
+        await self.db.refresh(new_summary)
 
         # Send notifications for community content
         if community_id:
             notification_service = NotificationService(self.db)
-            notification_service.notify_new_community_content(
+            await notification_service.notify_new_community_content(
                 content_type=ContentTypeEnum.summary,
                 content_id=new_summary.id,
                 community_id=community_id,

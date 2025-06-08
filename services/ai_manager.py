@@ -8,7 +8,8 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, TypeVar, Type, Generic, List
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from fastapi import HTTPException, status
 from models.models import (
@@ -60,7 +61,7 @@ class AIManager(Generic[T]):
     - Executing AI model calls with retry logic and error handling
     """
 
-    def __init__(self, db: Session, retry_config: Optional[AIRetryConfig] = None):
+    def __init__(self, db: AsyncSession, retry_config: Optional[AIRetryConfig] = None):
         self.db = db
         self._gemini_client = None
         self._openai_client = None
@@ -75,15 +76,13 @@ class AIManager(Generic[T]):
         """
         try:
             # First, try to get the user's own API key
-            user_key = (
-                self.db.query(AiApiKey)
-                .filter(
-                    AiApiKey.user_id == user_id,
-                    AiApiKey.provider_name == provider,
-                    AiApiKey.is_active == True,
-                )
-                .first()
+            stmt = select(AiApiKey).where(
+                AiApiKey.user_id == user_id,
+                AiApiKey.provider_name == provider,
+                AiApiKey.is_active == True,
             )
+            result = await self.db.execute(stmt)
+            user_key = result.scalar_one_or_none()
 
             if user_key:
                 logger.info(
@@ -99,19 +98,18 @@ class AIManager(Generic[T]):
             logger.debug("Looking for free user", username=free_username)
 
             if free_username:
-                free_user = (
-                    self.db.query(User).filter(User.username == free_username).first()
-                )
+                free_user_stmt = select(User).where(User.username == free_username)
+                free_user_result = await self.db.execute(free_user_stmt)
+                free_user = free_user_result.scalar_one_or_none()
+                
                 if free_user:
-                    free_user_key = (
-                        self.db.query(AiApiKey)
-                        .filter(
-                            AiApiKey.user_id == free_user.id,
-                            AiApiKey.provider_name == provider,
-                            AiApiKey.is_active == True,
-                        )
-                        .first()
+                    free_user_key_stmt = select(AiApiKey).where(
+                        AiApiKey.user_id == free_user.id,
+                        AiApiKey.provider_name == provider,
+                        AiApiKey.is_active == True,
                     )
+                    free_user_key_result = await self.db.execute(free_user_key_stmt)
+                    free_user_key = free_user_key_result.scalar_one_or_none()
 
                     if free_user_key:
                         logger.info(
@@ -174,14 +172,12 @@ class AIManager(Generic[T]):
                 else settings.free_tier_openai_limit
             )
 
-            usage_record = (
-                self.db.query(UserFreeApiUsage)
-                .filter(
-                    UserFreeApiUsage.user_id == user_id,
-                    UserFreeApiUsage.api_provider == provider,
-                )
-                .first()
+            stmt = select(UserFreeApiUsage).where(
+                UserFreeApiUsage.user_id == user_id,
+                UserFreeApiUsage.api_provider == provider,
             )
+            result = await self.db.execute(stmt)
+            usage_record = result.scalar_one_or_none()
 
             if not usage_record:
                 return  # No usage record means they're within limits
@@ -225,14 +221,12 @@ class AIManager(Generic[T]):
         Increment the free tier usage count for a user.
         """
         try:
-            usage_record = (
-                self.db.query(UserFreeApiUsage)
-                .filter(
-                    UserFreeApiUsage.user_id == user_id,
-                    UserFreeApiUsage.api_provider == provider,
-                )
-                .first()
+            stmt = select(UserFreeApiUsage).where(
+                UserFreeApiUsage.user_id == user_id,
+                UserFreeApiUsage.api_provider == provider,
             )
+            result = await self.db.execute(stmt)
+            usage_record = result.scalar_one_or_none()
 
             if not usage_record:
                 usage_record = UserFreeApiUsage(
@@ -246,7 +240,7 @@ class AIManager(Generic[T]):
                 usage_record.usage_count += 1
                 usage_record.last_used_at = datetime.now(timezone.utc)
 
-            self.db.commit()
+            await self.db.commit()
             logger.debug(
                 "Incremented free tier usage",
                 user_id=user_id,
@@ -261,7 +255,7 @@ class AIManager(Generic[T]):
                 user_id=user_id,
                 provider=provider.value,
             )
-            self.db.rollback()
+            await self.db.rollback()
 
     async def initialize_gemini_client(self, user_id: int) -> bool:
         """
@@ -375,36 +369,30 @@ class AIManager(Generic[T]):
             await self.initialize_gemini_client(user_id)
 
         # Get the API key ID
-        api_key_record = (
-            self.db.query(AiApiKey)
-            .filter(
-                AiApiKey.user_id == user_id,
-                AiApiKey.provider_name == AiProviderEnum.Google,
-                AiApiKey.is_active == True,
-            )
-            .first()
+        api_key_stmt = select(AiApiKey).where(
+            AiApiKey.user_id == user_id,
+            AiApiKey.provider_name == AiProviderEnum.Google,
+            AiApiKey.is_active == True,
         )
+        api_key_result = await self.db.execute(api_key_stmt)
+        api_key_record = api_key_result.scalar_one_or_none()
 
         # If no user-specific key, try to get the free user's key
         if not api_key_record:
             # First get the free user by username
-            free_user = (
-                self.db.query(User)
-                .filter(User.username == settings.default_free_user_username)
-                .first()
-            )
+            free_user_stmt = select(User).where(User.username == settings.default_free_user_username)
+            free_user_result = await self.db.execute(free_user_stmt)
+            free_user = free_user_result.scalar_one_or_none()
 
             if free_user:
                 # Get the free user's API key
-                api_key_record = (
-                    self.db.query(AiApiKey)
-                    .filter(
-                        AiApiKey.user_id == free_user.id,
-                        AiApiKey.provider_name == AiProviderEnum.Google,
-                        AiApiKey.is_active == True,
-                    )
-                    .first()
+                free_api_key_stmt = select(AiApiKey).where(
+                    AiApiKey.user_id == free_user.id,
+                    AiApiKey.provider_name == AiProviderEnum.Google,
+                    AiApiKey.is_active == True,
                 )
+                free_api_key_result = await self.db.execute(free_api_key_stmt)
+                api_key_record = free_api_key_result.scalar_one_or_none()
 
         # If still no API key found, raise an error
         if not api_key_record:
@@ -414,16 +402,14 @@ class AIManager(Generic[T]):
             )
 
         # Check if the file is already in the cache and not expired
-        cache_entry = (
-            self.db.query(GeminiFileCache)
-            .filter(
-                GeminiFileCache.physical_file_id == physical_file.id,
-                GeminiFileCache.api_key_id == api_key_record.id,
-                (GeminiFileCache.expiration_time > datetime.now(timezone.utc))
-                | (GeminiFileCache.expiration_time.is_(None)),
-            )
-            .first()
+        cache_stmt = select(GeminiFileCache).where(
+            GeminiFileCache.physical_file_id == physical_file.id,
+            GeminiFileCache.api_key_id == api_key_record.id,
+            (GeminiFileCache.expiration_time > datetime.now(timezone.utc))
+            | (GeminiFileCache.expiration_time.is_(None)),
         )
+        cache_result = await self.db.execute(cache_stmt)
+        cache_entry = cache_result.scalar_one_or_none()
 
         # If valid cache entry exists, return it
         if cache_entry:
@@ -455,34 +441,32 @@ class AIManager(Generic[T]):
             )
 
             # Check if there's an expired entry to update
-            expired_entry = (
-                self.db.query(GeminiFileCache)
-                .filter(
-                    GeminiFileCache.physical_file_id == physical_file.id,
-                    GeminiFileCache.api_key_id == api_key_record.id,
-                )
-                .first()
+            expired_stmt = select(GeminiFileCache).where(
+                GeminiFileCache.physical_file_id == physical_file.id,
+                GeminiFileCache.api_key_id == api_key_record.id,
             )
+            expired_result = await self.db.execute(expired_stmt)
+            expired_entry = expired_result.scalar_one_or_none()
 
             if expired_entry:
                 # Update the expired entry
                 for field, value in cache_data.dict().items():
                     setattr(expired_entry, field, value)
                 expired_entry.updated_at = datetime.now(timezone.utc)
-                self.db.commit()
-                self.db.refresh(expired_entry)
+                await self.db.commit()
+                await self.db.refresh(expired_entry)
                 return expired_entry
             else:
                 # Create a new cache entry
                 new_cache_entry = GeminiFileCache(**cache_data.dict())
                 self.db.add(new_cache_entry)
-                self.db.commit()
-                self.db.refresh(new_cache_entry)
+                await self.db.commit()
+                await self.db.refresh(new_cache_entry)
                 return new_cache_entry
 
         except Exception as e:
             # Log the error
-            self.db.rollback()
+            await self.db.rollback()
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to upload file to Gemini: {str(e)}",
@@ -517,11 +501,10 @@ class AIManager(Generic[T]):
         # Add files if provided
         if physical_file_ids and len(physical_file_ids) > 0:
             for file_id in physical_file_ids:
-                physical_file = (
-                    self.db.query(PhysicalFile)
-                    .filter(PhysicalFile.id == file_id)
-                    .first()
-                )
+                file_stmt = select(PhysicalFile).where(PhysicalFile.id == file_id)
+                file_result = await self.db.execute(file_stmt)
+                physical_file = file_result.scalar_one_or_none()
+                
                 if not physical_file:
                     raise HTTPException(
                         status_code=status.HTTP_404_NOT_FOUND,
@@ -529,14 +512,12 @@ class AIManager(Generic[T]):
                     )
 
                 # Check if user has access to the file
-                user_file_access = (
-                    self.db.query(UserFileAccess)
-                    .filter(
-                        UserFileAccess.physical_file_id == file_id,
-                        UserFileAccess.user_id == user_id,
-                    )
-                    .first()
+                access_stmt = select(UserFileAccess).where(
+                    UserFileAccess.physical_file_id == file_id,
+                    UserFileAccess.user_id == user_id,
                 )
+                access_result = await self.db.execute(access_stmt)
+                user_file_access = access_result.scalar_one_or_none()
 
                 # If not explicitly granted access, check if user is the uploader
                 if not user_file_access and physical_file.user_id != user_id:
@@ -641,19 +622,17 @@ class AIManager(Generic[T]):
             await self.increment_free_tier_usage(user_id, AiProviderEnum.Google)
 
             # Update last_used_at for the API key
-            api_key_record = (
-                self.db.query(AiApiKey)
-                .filter(
-                    AiApiKey.user_id == user_id,
-                    AiApiKey.provider_name == AiProviderEnum.Google,
-                    AiApiKey.is_active == True,
-                )
-                .first()
+            api_key_stmt = select(AiApiKey).where(
+                AiApiKey.user_id == user_id,
+                AiApiKey.provider_name == AiProviderEnum.Google,
+                AiApiKey.is_active == True,
             )
+            api_key_result = await self.db.execute(api_key_stmt)
+            api_key_record = api_key_result.scalar_one_or_none()
 
             if api_key_record:
                 api_key_record.last_used_at = datetime.now(timezone.utc)
-                self.db.commit()
+                await self.db.commit()
 
             # Parse response
             if response_schema:

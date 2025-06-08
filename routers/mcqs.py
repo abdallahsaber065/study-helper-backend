@@ -4,8 +4,10 @@ Router for MCQ and Quiz functionality.
 from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy.orm import Session, joinedload
-from db_config import get_db
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+from sqlalchemy import select, delete
+from db_config import get_async_db
 from core.security import get_current_user
 from models.models import (
     User, QuestionTag, McqQuestion, McqQuestionTagLink, 
@@ -26,29 +28,33 @@ router = APIRouter(prefix="/mcqs", tags=["MCQs"])
 async def create_question(
     question: McqQuestionCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Create a new MCQ question."""
     # Create the question
     question_data = question.dict(exclude={"tag_ids"})
     db_question = McqQuestion(**question_data, user_id=current_user.id)
     db.add(db_question)
-    db.commit()
-    db.refresh(db_question)
+    await db.commit()
+    await db.refresh(db_question)
     
     # Link with tags
     if question.tag_ids:
         for tag_id in question.tag_ids:
-            tag = db.query(QuestionTag).filter(QuestionTag.id == tag_id).first()
+            tag_stmt = select(QuestionTag).where(QuestionTag.id == tag_id)
+            tag_result = await db.execute(tag_stmt)
+            tag = tag_result.scalar_one_or_none()
             if tag:
                 tag_link = McqQuestionTagLink(question_id=db_question.id, tag_id=tag_id)
                 db.add(tag_link)
-        db.commit()
+        await db.commit()
     
     # Reload with tags
-    db_question = db.query(McqQuestion).options(
-        joinedload(McqQuestion.tag_links).joinedload(McqQuestionTagLink.tag)
-    ).filter(McqQuestion.id == db_question.id).first()
+    question_stmt = select(McqQuestion).options(
+        selectinload(McqQuestion.tag_links).selectinload(McqQuestionTagLink.tag)
+    ).where(McqQuestion.id == db_question.id)
+    question_result = await db.execute(question_stmt)
+    db_question = question_result.scalar_one()
     
     return _convert_question_to_read(db_question)
 
@@ -61,35 +67,41 @@ async def list_questions(
     difficulty: Optional[str] = Query(None),
     my_questions: bool = Query(False),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """List MCQ questions with filtering options."""
-    query = db.query(McqQuestion).options(
-        joinedload(McqQuestion.tag_links).joinedload(McqQuestionTagLink.tag)
+    stmt = select(McqQuestion).options(
+        selectinload(McqQuestion.tag_links).selectinload(McqQuestionTagLink.tag)
     )
     
     if my_questions:
-        query = query.filter(McqQuestion.user_id == current_user.id)
+        stmt = stmt.where(McqQuestion.user_id == current_user.id)
     
     if tag_id:
-        query = query.join(McqQuestionTagLink).filter(McqQuestionTagLink.tag_id == tag_id)
+        stmt = stmt.join(McqQuestionTagLink).where(McqQuestionTagLink.tag_id == tag_id)
     
     if difficulty:
-        query = query.filter(McqQuestion.difficulty_level == difficulty)
+        stmt = stmt.where(McqQuestion.difficulty_level == difficulty)
     
-    questions = query.offset(skip).limit(limit).all()
+    stmt = stmt.offset(skip).limit(limit)
+    result = await db.execute(stmt)
+    questions = result.scalars().all()
+    
     return [_convert_question_to_read(q) for q in questions]
 
 
 @router.get("/questions/{question_id}", response_model=McqQuestionRead)
 async def get_question(
     question_id: int,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Get a specific MCQ question."""
-    question = db.query(McqQuestion).options(
-        joinedload(McqQuestion.tag_links).joinedload(McqQuestionTagLink.tag)
-    ).filter(McqQuestion.id == question_id).first()
+    stmt = select(McqQuestion).options(
+        selectinload(McqQuestion.tag_links).selectinload(McqQuestionTagLink.tag)
+    ).where(McqQuestion.id == question_id)
+    
+    result = await db.execute(stmt)
+    question = result.scalar_one_or_none()
     
     if not question:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Question not found")
@@ -102,10 +114,13 @@ async def update_question(
     question_id: int,
     question_update: McqQuestionUpdate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Update an MCQ question."""
-    question = db.query(McqQuestion).filter(McqQuestion.id == question_id).first()
+    stmt = select(McqQuestion).where(McqQuestion.id == question_id)
+    result = await db.execute(stmt)
+    question = result.scalar_one_or_none()
+    
     if not question:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Question not found")
     
@@ -126,22 +141,27 @@ async def update_question(
     # Update tag associations if provided
     if question_update.tag_ids is not None:
         # Remove existing tag links
-        db.query(McqQuestionTagLink).filter(McqQuestionTagLink.question_id == question_id).delete()
+        delete_stmt = delete(McqQuestionTagLink).where(McqQuestionTagLink.question_id == question_id)
+        await db.execute(delete_stmt)
         
         # Add new tag links
         for tag_id in question_update.tag_ids:
-            tag = db.query(QuestionTag).filter(QuestionTag.id == tag_id).first()
+            tag_stmt = select(QuestionTag).where(QuestionTag.id == tag_id)
+            tag_result = await db.execute(tag_stmt)
+            tag = tag_result.scalar_one_or_none()
             if tag:
                 tag_link = McqQuestionTagLink(question_id=question_id, tag_id=tag_id)
                 db.add(tag_link)
     
-    db.commit()
-    db.refresh(question)
+    await db.commit()
+    await db.refresh(question)
     
     # Reload with tags
-    question = db.query(McqQuestion).options(
-        joinedload(McqQuestion.tag_links).joinedload(McqQuestionTagLink.tag)
-    ).filter(McqQuestion.id == question_id).first()
+    question_stmt = select(McqQuestion).options(
+        selectinload(McqQuestion.tag_links).selectinload(McqQuestionTagLink.tag)
+    ).where(McqQuestion.id == question_id)
+    question_result = await db.execute(question_stmt)
+    question = question_result.scalar_one()
     
     return _convert_question_to_read(question)
 
@@ -150,10 +170,13 @@ async def update_question(
 async def delete_question(
     question_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Delete an MCQ question."""
-    question = db.query(McqQuestion).filter(McqQuestion.id == question_id).first()
+    stmt = select(McqQuestion).where(McqQuestion.id == question_id)
+    result = await db.execute(stmt)
+    question = result.scalar_one_or_none()
+    
     if not question:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Question not found")
     
@@ -164,7 +187,7 @@ async def delete_question(
             detail="Not authorized to delete this question"
         )
     
-    db.delete(question)
-    db.commit()
+    await db.delete(question)
+    await db.commit()
 
 

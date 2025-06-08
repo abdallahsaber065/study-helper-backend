@@ -13,11 +13,12 @@ from core.logging import setup_logging, get_logger, database_logger
 setup_logging()
 logger = get_logger("main")
 
-from db_config import get_db
+from db_config import get_async_db
 from models.models import Base, User, AiApiKey, AiProviderEnum
 from app import app
 from core.security import get_password_hash, encrypt_api_key
 from core.config import settings
+from sqlalchemy import select
 
 os.makedirs("cache", exist_ok=True)
 
@@ -28,105 +29,105 @@ async def startup_db_client():
     logger.info("Starting database initialization")
 
     try:
-        db = next(get_db())
+        async for db in get_async_db():
+            # Create default admin user if not exists
+            admin_username = settings.default_admin_username
+            admin_email = settings.default_admin_email
+            admin_password = settings.default_admin_password
+            force_reset_admin = settings.force_reset_password_admin
 
-        # Create default admin user if not exists
-        admin_username = settings.default_admin_username
-        admin_email = settings.default_admin_email
-        admin_password = settings.default_admin_password
-        force_reset_admin = settings.force_reset_password_admin
+            # Create default free user if not exists
+            free_username = settings.default_free_user_username
+            free_email = settings.default_free_user_email
+            free_password = settings.default_free_user_password
+            force_reset_free = settings.force_reset_password_free
 
-        # Create default free user if not exists
-        free_username = settings.default_free_user_username
-        free_email = settings.default_free_user_email
-        free_password = settings.default_free_user_password
-        force_reset_free = settings.force_reset_password_free
+            # Get Gemini API key
+            gemini_api_key = settings.gemini_api_key
 
-        # Get Gemini API key
-        gemini_api_key = settings.gemini_api_key
+            if admin_username and admin_email and admin_password:
+                admin_stmt = select(User).where(User.username == admin_username)
+                admin_result = await db.execute(admin_stmt)
+                admin_user = admin_result.scalar_one_or_none()
 
-        if admin_username and admin_email and admin_password:
-            admin_user = db.query(User).filter(User.username == admin_username).first()
+                if not admin_user:
+                    logger.info("Creating default admin user", username=admin_username)
+                    admin_user = User(
+                        username=admin_username,
+                        email=admin_email,
+                        password_hash=get_password_hash(admin_password),
+                        first_name="Admin",
+                        last_name="User",
+                        role="admin",
+                        is_active=True,
+                        is_verified=True,
+                    )
+                    db.add(admin_user)
+                    await db.commit()
+                    await db.refresh(admin_user)
+                    logger.info(
+                        "Default admin user created successfully", user_id=admin_user.id
+                    )
+                elif force_reset_admin:
+                    logger.info("Resetting admin user password", username=admin_username)
+                    admin_user.password_hash = get_password_hash(admin_password)
+                    await db.commit()
+                    logger.info("Admin user password reset successfully")
 
-            if not admin_user:
-                logger.info("Creating default admin user", username=admin_username)
-                admin_user = User(
-                    username=admin_username,
-                    email=admin_email,
-                    password_hash=get_password_hash(admin_password),
-                    first_name="Admin",
-                    last_name="User",
-                    role="admin",
-                    is_active=True,
-                    is_verified=True,
-                )
-                db.add(admin_user)
-                db.commit()
-                db.refresh(admin_user)
-                logger.info(
-                    "Default admin user created successfully", user_id=admin_user.id
-                )
-            elif force_reset_admin:
-                logger.info("Resetting admin user password", username=admin_username)
-                admin_user.password_hash = get_password_hash(admin_password)
-                db.commit()
-                logger.info("Admin user password reset successfully")
+            if free_username and free_email and free_password:
+                free_stmt = select(User).where(User.username == free_username)
+                free_result = await db.execute(free_stmt)
+                free_user = free_result.scalar_one_or_none()
 
-        if free_username and free_email and free_password:
-            free_user = db.query(User).filter(User.username == free_username).first()
+                if not free_user:
+                    logger.info("Creating default free user", username=free_username)
+                    free_user = User(
+                        username=free_username,
+                        email=free_email,
+                        password_hash=get_password_hash(free_password),
+                        first_name="Free",
+                        last_name="User",
+                        role="user",
+                        is_active=True,
+                        is_verified=True,
+                    )
+                    db.add(free_user)
+                    await db.commit()
+                    await db.refresh(free_user)
+                    logger.info(
+                        "Default free user created successfully", user_id=free_user.id
+                    )
+                elif force_reset_free:
+                    logger.info("Resetting free user password", username=free_username)
+                    free_user.password_hash = get_password_hash(free_password)
+                    await db.commit()
+                    logger.info("Free user password reset successfully")
 
-            if not free_user:
-                logger.info("Creating default free user", username=free_username)
-                free_user = User(
-                    username=free_username,
-                    email=free_email,
-                    password_hash=get_password_hash(free_password),
-                    first_name="Free",
-                    last_name="User",
-                    role="user",
-                    is_active=True,
-                    is_verified=True,
-                )
-                db.add(free_user)
-                db.commit()
-                db.refresh(free_user)
-                logger.info(
-                    "Default free user created successfully", user_id=free_user.id
-                )
-            elif force_reset_free:
-                logger.info("Resetting free user password", username=free_username)
-                free_user.password_hash = get_password_hash(free_password)
-                db.commit()
-                logger.info("Free user password reset successfully")
-
-            # Add Gemini API key to free user if provided
-            if gemini_api_key and free_user:
-                # Check if key already exists
-                existing_key = (
-                    db.query(AiApiKey)
-                    .filter(
+                # Add Gemini API key to free user if provided
+                if gemini_api_key and free_user:
+                    # Check if key already exists
+                    existing_key_stmt = select(AiApiKey).where(
                         AiApiKey.user_id == free_user.id,
                         AiApiKey.provider_name == AiProviderEnum.Google,
                     )
-                    .first()
-                )
+                    existing_key_result = await db.execute(existing_key_stmt)
+                    existing_key = existing_key_result.scalar_one_or_none()
 
-                if not existing_key:
-                    logger.info(
-                        "Adding Gemini API key to free user", user_id=free_user.id
-                    )
-                    api_key = AiApiKey(
-                        user_id=free_user.id,
-                        provider_name=AiProviderEnum.Google,
-                        encrypted_api_key=encrypt_api_key(gemini_api_key),
-                        is_active=True,
-                    )
-                    db.add(api_key)
-                    db.commit()
-                    logger.info("Gemini API key added successfully")
-                else:
-                    logger.info("Gemini API key already exists for free user")
-
+                    if not existing_key:
+                        logger.info(
+                            "Adding Gemini API key to free user", user_id=free_user.id
+                        )
+                        api_key = AiApiKey(
+                            user_id=free_user.id,
+                            provider_name=AiProviderEnum.Google,
+                            encrypted_api_key=encrypt_api_key(gemini_api_key),
+                            is_active=True,
+                        )
+                        db.add(api_key)
+                        await db.commit()
+                        logger.info("Gemini API key added successfully")
+                    else:
+                        logger.info("Gemini API key already exists for free user")
         logger.info("Database initialization completed successfully")
 
     except Exception as e:

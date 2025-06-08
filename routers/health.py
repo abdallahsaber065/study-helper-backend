@@ -6,11 +6,11 @@ import psutil
 from datetime import datetime, timezone
 from typing import Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text, select, func
 import structlog
 
-from db_config import get_db
+from db_config import get_async_db
 from core.config import settings
 from models.models import User, AiApiKey, AiProviderEnum
 from services.ai_manager import AIManager
@@ -22,7 +22,7 @@ logger = structlog.get_logger("health")
 class HealthChecker:
     """Service for performing various health checks."""
     
-    def __init__(self, db: Session):
+    def __init__(self, db: AsyncSession):
         self.db = db
     
     async def check_database(self) -> Dict[str, Any]:
@@ -31,11 +31,13 @@ class HealthChecker:
             start_time = time.time()
             
             # Test basic connection
-            result = self.db.execute(text("SELECT 1"))
+            result = await self.db.execute(text("SELECT 1"))
             result.fetchone()
             
             # Test user count query
-            user_count = self.db.query(User).count()
+            count_stmt = select(func.count(User.id))
+            count_result = await self.db.execute(count_stmt)
+            user_count = count_result.scalar()
             
             response_time = (time.time() - start_time) * 1000
             
@@ -152,7 +154,7 @@ async def health_check():
 
 
 @router.get("/detailed", summary="Detailed health check")
-async def detailed_health_check(db: Session = Depends(get_db)):
+async def detailed_health_check(db: AsyncSession = Depends(get_async_db)):
     """
     Comprehensive health check including database, AI services, and system resources.
     """
@@ -204,7 +206,7 @@ async def detailed_health_check(db: Session = Depends(get_db)):
 
 
 @router.get("/database", summary="Database health check")
-async def database_health_check(db: Session = Depends(get_db)):
+async def database_health_check(db: AsyncSession = Depends(get_async_db)):
     """
     Check database connectivity and performance.
     """
@@ -221,7 +223,7 @@ async def database_health_check(db: Session = Depends(get_db)):
 
 
 @router.get("/ai-services", summary="AI services health check")
-async def ai_services_health_check(db: Session = Depends(get_db)):
+async def ai_services_health_check(db: AsyncSession = Depends(get_async_db)):
     """
     Check AI service availability and configuration.
     """
@@ -249,7 +251,7 @@ async def system_health_check():
 
 
 @router.get("/readiness", summary="Readiness probe")
-async def readiness_check(db: Session = Depends(get_db)):
+async def readiness_check(db: AsyncSession = Depends(get_async_db)):
     """
     Kubernetes-style readiness probe.
     Returns 200 if the service is ready to handle requests.

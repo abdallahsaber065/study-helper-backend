@@ -4,8 +4,9 @@ Authentication routes for user registration, login, and user management.
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from fastapi.security import HTTPBearer
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import select, or_, and_
 
 from core.security import (
     get_password_hash, 
@@ -18,7 +19,7 @@ from core.security import (
 )
 from core.config import settings
 from core.logging import get_logger
-from db_config import get_db
+from db_config import get_async_db
 from models.models import User, UserSession, UserRoleEnum
 from schemas.user import UserCreate, UserRead, UserUpdate
 from schemas.auth import (
@@ -45,7 +46,7 @@ logger = get_logger("auth")
 async def register_user(
     user_data: UserCreate, 
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """
     Register a new user.
@@ -59,7 +60,9 @@ async def register_user(
     logger.info("User registration attempt", username=user_data.username, email=user_data.email)
     
     # Check if username already exists
-    if db.query(User).filter(User.username == user_data.username).first():
+    username_stmt = select(User).where(User.username == user_data.username)
+    username_result = await db.execute(username_stmt)
+    if username_result.scalar_one_or_none():
         logger.warning("Registration failed - username already exists", username=user_data.username)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -67,7 +70,9 @@ async def register_user(
         )
     
     # Check if email already exists
-    if db.query(User).filter(User.email == user_data.email).first():
+    email_stmt = select(User).where(User.email == user_data.email)
+    email_result = await db.execute(email_stmt)
+    if email_result.scalar_one_or_none():
         logger.warning("Registration failed - email already exists", email=user_data.email)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -91,8 +96,8 @@ async def register_user(
     
     try:
         db.add(db_user)
-        db.commit()
-        db.refresh(db_user)
+        await db.commit()
+        await db.refresh(db_user)
         
         logger.info("User registered successfully", 
                    username=db_user.username, 
@@ -133,7 +138,7 @@ async def register_user(
         )
     
     except IntegrityError as e:
-        db.rollback()
+        await db.rollback()
         logger.error("Registration failed - database integrity error", 
                     username=user_data.username, 
                     error=str(e))
@@ -142,7 +147,7 @@ async def register_user(
             detail="User with this username or email already exists"
         )
     except Exception as e:
-        db.rollback()
+        await db.rollback()
         logger.error("Registration failed - unexpected error", 
                     username=user_data.username, 
                     error=str(e))
@@ -153,7 +158,7 @@ async def register_user(
 
 
 @router.post("/login", response_model=LoginResponse)
-async def login_user(login_data: LoginRequest, db: Session = Depends(get_db)):
+async def login_user(login_data: LoginRequest, db: AsyncSession = Depends(get_async_db)):
     """
     Login user and return JWT token.
     
@@ -163,9 +168,11 @@ async def login_user(login_data: LoginRequest, db: Session = Depends(get_db)):
     logger.info("Login attempt", username_or_email=login_data.username)
     
     # Find user by username or email
-    user = db.query(User).filter(
-        (User.username == login_data.username) | (User.email == login_data.username)
-    ).first()
+    user_stmt = select(User).where(
+        or_(User.username == login_data.username, User.email == login_data.username)
+    )
+    user_result = await db.execute(user_stmt)
+    user = user_result.scalar_one_or_none()
     
     if not user or not verify_password(login_data.password, user.password_hash):
         logger.warning("Login failed - invalid credentials", username_or_email=login_data.username)
@@ -194,7 +201,10 @@ async def login_user(login_data: LoginRequest, db: Session = Depends(get_db)):
     user.last_login = datetime.now(timezone.utc)
     
     # Create or update user session
-    session = db.query(UserSession).filter(UserSession.user_id == user.id).first()
+    session_stmt = select(UserSession).where(UserSession.user_id == user.id)
+    session_result = await db.execute(session_stmt)
+    session = session_result.scalar_one_or_none()
+    
     if session:
         session.session_token = access_token
         session.updated_at = datetime.now(timezone.utc)
@@ -209,7 +219,7 @@ async def login_user(login_data: LoginRequest, db: Session = Depends(get_db)):
         db.add(session)
         logger.debug("Created new user session", username=user.username, user_id=user.id)
     
-    db.commit()
+    await db.commit()
     
     logger.info("Login successful", 
                username=user.username, 
@@ -238,17 +248,20 @@ async def login_user(login_data: LoginRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/logout")
-async def logout_user(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+async def logout_user(current_user: User = Depends(get_current_active_user), db: AsyncSession = Depends(get_async_db)):
     """
     Logout user by invalidating their session.
     """
     logger.info("Logout request", username=current_user.username, user_id=current_user.id)
     
     # Find and delete the user's session
-    session = db.query(UserSession).filter(UserSession.user_id == current_user.id).first()
+    session_stmt = select(UserSession).where(UserSession.user_id == current_user.id)
+    session_result = await db.execute(session_stmt)
+    session = session_result.scalar_one_or_none()
+    
     if session:
-        db.delete(session)
-        db.commit()
+        await db.delete(session)
+        await db.commit()
         logger.info("User session deleted", username=current_user.username, user_id=current_user.id)
     else:
         logger.warning("No session found for logout", username=current_user.username, user_id=current_user.id)
@@ -269,7 +282,7 @@ async def get_current_user_info(current_user: User = Depends(get_current_active_
 async def update_current_user(
     user_update: UserUpdate,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """
     Update current authenticated user's information.
@@ -281,10 +294,15 @@ async def update_current_user(
     
     # Check if email is being updated and if it's already taken
     if "email" in update_data:
-        existing_user = db.query(User).filter(
-            User.email == update_data["email"],
-            User.id != current_user.id
-        ).first()
+        existing_user_stmt = select(User).where(
+            and_(
+                User.email == update_data["email"],
+                User.id != current_user.id
+            )
+        )
+        existing_user_result = await db.execute(existing_user_stmt)
+        existing_user = existing_user_result.scalar_one_or_none()
+        
         if existing_user:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -296,14 +314,14 @@ async def update_current_user(
         setattr(current_user, field, value)
     
     current_user.updated_at = datetime.now(timezone.utc)
-    db.commit()
-    db.refresh(current_user)
+    await db.commit()
+    await db.refresh(current_user)
     
     return current_user
 
 
 @router.post("/refresh", response_model=Token)
-async def refresh_token(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+async def refresh_token(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_async_db)):
     """
     Refresh JWT token for current user.
     """
@@ -314,12 +332,15 @@ async def refresh_token(current_user: User = Depends(get_current_user), db: Sess
     )
     
     # Update session with new token
-    session = db.query(UserSession).filter(UserSession.user_id == current_user.id).first()
+    session_stmt = select(UserSession).where(UserSession.user_id == current_user.id)
+    session_result = await db.execute(session_stmt)
+    session = session_result.scalar_one_or_none()
+    
     if session:
         session.session_token = access_token
         session.updated_at = datetime.now(timezone.utc)
         session.expires_at = datetime.now(timezone.utc) + access_token_expires
-        db.commit()
+        await db.commit()
     
     return Token(
         access_token=access_token,
@@ -332,7 +353,7 @@ async def refresh_token(current_user: User = Depends(get_current_user), db: Sess
 async def request_password_reset(
     reset_request: PasswordResetRequest,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """
     Request a password reset email.
@@ -342,7 +363,9 @@ async def request_password_reset(
     logger.info("Password reset requested", email=reset_request.email)
     
     # Find user by email
-    user = db.query(User).filter(User.email == reset_request.email).first()
+    user_stmt = select(User).where(User.email == reset_request.email)
+    user_result = await db.execute(user_stmt)
+    user = user_result.scalar_one_or_none()
     
     # Always return success even if email not found (to prevent email enumeration)
     if not user:
@@ -376,7 +399,7 @@ async def request_password_reset(
 @router.post("/password-reset/confirm", response_model=PasswordResetResponse)
 async def confirm_password_reset(
     reset_confirm: PasswordResetConfirm,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """
     Reset password using a token from the reset email.
@@ -404,7 +427,10 @@ async def confirm_password_reset(
         )
     
     # Find the user
-    user = db.query(User).filter(User.username == username).first()
+    user_stmt = select(User).where(User.username == username)
+    user_result = await db.execute(user_stmt)
+    user = user_result.scalar_one_or_none()
+    
     if not user:
         logger.error("User not found for password reset", username=username)
         raise HTTPException(
@@ -420,11 +446,14 @@ async def confirm_password_reset(
     user.updated_at = datetime.now(timezone.utc)
     
     # Invalidate all sessions (force logout on all devices)
-    sessions = db.query(UserSession).filter(UserSession.user_id == user.id).all()
-    for session in sessions:
-        db.delete(session)
+    sessions_stmt = select(UserSession).where(UserSession.user_id == user.id)
+    sessions_result = await db.execute(sessions_stmt)
+    sessions = sessions_result.scalars().all()
     
-    db.commit()
+    for session in sessions:
+        await db.delete(session)
+    
+    await db.commit()
     
     logger.info("Password reset successful", username=user.username, user_id=user.id)
     
@@ -437,7 +466,7 @@ async def confirm_password_reset(
 async def activate_account(
     activation_request: ActivationRequest,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """
     Activate a user account using the token sent via email.
@@ -464,7 +493,10 @@ async def activate_account(
         )
     
     # Find the user
-    user = db.query(User).filter(User.username == username).first()
+    user_stmt = select(User).where(User.username == username)
+    user_result = await db.execute(user_stmt)
+    user = user_result.scalar_one_or_none()
+    
     if not user:
         logger.error("User not found for activation", username=username)
         raise HTTPException(
@@ -488,7 +520,7 @@ async def activate_account(
     # Activate the account
     user.is_verified = True
     user.updated_at = datetime.now(timezone.utc)
-    db.commit()
+    await db.commit()
     
     logger.info("Account activated successfully", username=user.username, user_id=user.id)
     

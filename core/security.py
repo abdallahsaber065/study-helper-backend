@@ -7,10 +7,11 @@ from passlib.context import CryptContext
 from jose import JWTError, jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, or_
 from core.config import settings
 from core.logging import get_logger, security_logger
-from db_config import get_db
+from db_config import get_async_db
 from models.models import User, UserRoleEnum, UserSession
 from cryptography.fernet import Fernet
 import base64
@@ -150,7 +151,7 @@ def verify_token(token: str) -> Optional[dict]:
         return None
 
 
-async def get_current_user(token: HTTPAuthorizationCredentials = Depends(security), db: Session = Depends(get_db)) -> User:
+async def get_current_user(token: HTTPAuthorizationCredentials = Depends(security), db: AsyncSession = Depends(get_async_db)) -> User:
     """
     Get the current user from the JWT token.
     
@@ -179,7 +180,9 @@ async def get_current_user(token: HTTPAuthorizationCredentials = Depends(securit
             raise credentials_exception
         
         # Find the user
-        user = db.query(User).filter(User.username == username).first()
+        user_stmt = select(User).where(User.username == username)
+        user_result = await db.execute(user_stmt)
+        user = user_result.scalar_one_or_none()
         if user is None:
             logger.warning("User not found for token", username=username)
             raise credentials_exception
@@ -188,11 +191,16 @@ async def get_current_user(token: HTTPAuthorizationCredentials = Depends(securit
         token_value = token.credentials
 
         # Check if session is still valid
-        session = db.query(UserSession).filter(
+        session_stmt = select(UserSession).where(
             UserSession.user_id == user.id,
             UserSession.session_token == token_value,  # Check the specific token
-            (UserSession.expires_at > datetime.now(timezone.utc)) | (UserSession.expires_at.is_(None))  # Check if not expired
-        ).first()
+            or_(
+                UserSession.expires_at > datetime.now(timezone.utc),
+                UserSession.expires_at.is_(None)
+            )  # Check if not expired
+        )
+        session_result = await db.execute(session_stmt)
+        session = session_result.scalar_one_or_none()
 
         if not session:
             logger.warning("No valid session found", username=username, user_id=user.id)

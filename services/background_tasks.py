@@ -4,12 +4,12 @@ Background task service for handling long-running operations.
 import asyncio
 from datetime import datetime, timezone
 from typing import Dict, Any, Callable, Optional
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import BackgroundTasks
 import logging
 from enum import Enum
 
-from db_config import get_db
+from db_config import get_async_db
 from models.models import User, ContentTypeEnum
 from services.analytics_service import ContentAnalyticsService
 from services.versioning_service import ContentVersioningService
@@ -144,13 +144,13 @@ task_manager = BackgroundTaskManager()
 
 
 # Background task functions
-def sync_all_analytics():
+async def sync_all_analytics():
     """Synchronize all analytics data."""
     try:
-        with next(get_db()) as db:
+        async with get_async_db() as db:
             analytics_service = ContentAnalyticsService(db)
-            analytics_service.sync_comment_counts()
-            orphaned_count = analytics_service.cleanup_orphaned_analytics()
+            await analytics_service.sync_comment_counts()
+            orphaned_count = await analytics_service.cleanup_orphaned_analytics()
             
             return {
                 "message": "Analytics synchronized successfully",
@@ -161,12 +161,12 @@ def sync_all_analytics():
         raise
 
 
-def cleanup_content_versions(content_type: ContentTypeEnum, content_id: int, keep_latest: int = 10):
+async def cleanup_content_versions(content_type: ContentTypeEnum, content_id: int, keep_latest: int = 10):
     """Clean up old content versions."""
     try:
-        with next(get_db()) as db:
+        async with get_async_db() as db:
             versioning_service = ContentVersioningService(db)
-            deleted_count = versioning_service.delete_old_versions(
+            deleted_count = await versioning_service.delete_old_versions(
                 content_type=content_type,
                 content_id=content_id,
                 keep_latest=keep_latest
@@ -181,16 +181,16 @@ def cleanup_content_versions(content_type: ContentTypeEnum, content_id: int, kee
         raise
 
 
-def batch_send_notifications(user_ids: list[int], notification_data: Dict[str, Any]):
+async def batch_send_notifications(user_ids: list[int], notification_data: Dict[str, Any]):
     """Send notifications to multiple users."""
     try:
-        with next(get_db()) as db:
+        async with get_async_db() as db:
             notification_service = NotificationService(db)
             sent_count = 0
             
             for user_id in user_ids:
                 try:
-                    notification_service.create_notification(
+                    await notification_service.create_notification(
                         user_id=user_id,
                         **notification_data
                     )
@@ -211,11 +211,11 @@ def batch_send_notifications(user_ids: list[int], notification_data: Dict[str, A
 async def analyze_content_engagement(content_type: ContentTypeEnum, content_id: int):
     """Analyze content engagement patterns."""
     try:
-        with next(get_db()) as db:
+        async with get_async_db() as db:
             analytics_service = ContentAnalyticsService(db)
             
             # Get engagement metrics
-            metrics = analytics_service.get_content_engagement_metrics(
+            metrics = await analytics_service.get_content_engagement_metrics(
                 content_type=content_type,
                 content_id=content_id
             )

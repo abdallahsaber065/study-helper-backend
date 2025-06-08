@@ -3,7 +3,8 @@ MCQ Generation Service with AI integration.
 """
 
 from typing import List, Optional, Dict, Any
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from fastapi import HTTPException, status
 from pydantic import BaseModel
@@ -27,7 +28,7 @@ logger = get_logger("mcq_service")
 class MCQGeneratorService:
     """Service for generating MCQs using AI."""
 
-    def __init__(self, db: Session):
+    def __init__(self, db: AsyncSession):
         self.db = db
         self.ai_manager = AIManager(db)
         
@@ -80,7 +81,10 @@ class MCQGeneratorService:
         
         # Validate files exist and user has access
         for file_id in request.physical_file_ids:
-            file_record = self.db.query(PhysicalFile).filter(PhysicalFile.id == file_id).first()
+            file_stmt = select(PhysicalFile).where(PhysicalFile.id == file_id)
+            file_result = await self.db.execute(file_stmt)
+            file_record = file_result.scalar_one_or_none()
+            
             if not file_record:
                 logger.warning("File not found for MCQ generation", 
                               user_id=user.id, 
@@ -158,12 +162,15 @@ class MCQGeneratorService:
             # Create or get tags
             tag_objects = []
             for tag_name in mcq_set.tags:
-                tag = self.db.query(QuestionTag).filter(QuestionTag.name == tag_name).first()
+                tag_stmt = select(QuestionTag).where(QuestionTag.name == tag_name)
+                tag_result = await self.db.execute(tag_stmt)
+                tag = tag_result.scalar_one_or_none()
+                
                 if not tag:
                     tag = QuestionTag(name=tag_name, description=f"Auto-generated tag: {tag_name}")
                     self.db.add(tag)
-                    self.db.commit()
-                    self.db.refresh(tag)
+                    await self.db.commit()
+                    await self.db.refresh(tag)
                     logger.debug("Created new question tag", 
                                 user_id=user.id, 
                                 tag_name=tag_name, 
@@ -198,8 +205,8 @@ class MCQGeneratorService:
                         user_id=user.id
                     )
                     self.db.add(question)
-                    self.db.commit()
-                    self.db.refresh(question)
+                    await self.db.commit()
+                    await self.db.refresh(question)
 
                     # Link with tags
                     for tag in tag_objects:
@@ -221,13 +228,13 @@ class MCQGeneratorService:
                                 user_id=user.id, 
                                 question_number=idx + 1,
                                 error=str(e))
-                    self.db.rollback()
+                    await self.db.rollback()
                     raise HTTPException(
                         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                         detail=f"Failed to create question {idx + 1}"
                     )
 
-            self.db.commit()
+            await self.db.commit()
             logger.info("All MCQ questions created successfully", 
                        user_id=user.id, 
                        questions_created=len(created_questions))
@@ -260,8 +267,8 @@ class MCQGeneratorService:
                         community_id=request.community_id
                     )
                     self.db.add(quiz)
-                    self.db.commit()
-                    self.db.refresh(quiz)
+                    await self.db.commit()
+                    await self.db.refresh(quiz)
 
                     # Link questions to quiz
                     for idx, question in enumerate(created_questions):
@@ -272,7 +279,7 @@ class MCQGeneratorService:
                         )
                         self.db.add(quiz_link)
 
-                    self.db.commit()
+                    await self.db.commit()
                     
                     logger.info("Quiz created successfully", 
                                user_id=user.id, 
@@ -291,7 +298,7 @@ class MCQGeneratorService:
                         from models.models import ContentTypeEnum
                         
                         notification_service = NotificationService(self.db)
-                        notification_service.notify_new_community_content(
+                        await notification_service.notify_new_community_content(
                             content_type=ContentTypeEnum.quiz,
                             content_id=quiz.id,
                             community_id=request.community_id,
@@ -310,7 +317,7 @@ class MCQGeneratorService:
                     logger.error("Failed to create quiz", 
                                 user_id=user.id, 
                                 error=str(e))
-                    self.db.rollback()
+                    await self.db.rollback()
                     raise HTTPException(
                         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                         detail="Failed to create quiz from generated questions"
@@ -329,7 +336,7 @@ class MCQGeneratorService:
                         user_id=user.id, 
                         error=str(e),
                         provider=e.provider if hasattr(e, 'provider') else 'unknown')
-            self.db.rollback()
+            await self.db.rollback()
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"AI service error: {str(e)}"
@@ -340,7 +347,7 @@ class MCQGeneratorService:
                         error=str(e), 
                         error_type=type(e).__name__,
                         exc_info=True)
-            self.db.rollback()
+            await self.db.rollback()
             if isinstance(e, HTTPException):
                 raise e
             raise HTTPException(

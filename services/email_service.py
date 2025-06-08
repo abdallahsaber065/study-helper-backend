@@ -2,7 +2,7 @@
 Email service for sending emails via SMTP.
 """
 import os
-import smtplib
+import aiosmtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from pathlib import Path
@@ -86,11 +86,11 @@ class EmailService:
             if bcc:
                 recipients.extend(bcc)
             
-            # Connect to the SMTP server and send the email
-            with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
-                server.starttls()
-                server.login(self.smtp_username, self.smtp_password)
-                server.sendmail(self.sender_email, recipients, message.as_string())
+            # Connect to the SMTP server and send the email using aiosmtplib
+            async with aiosmtplib.SMTP(hostname=self.smtp_server, port=self.smtp_port) as server:
+                await server.starttls()
+                await server.login(self.smtp_username, self.smtp_password)
+                await server.sendmail(self.sender_email, recipients, message.as_string())
             
             logger.info(
                 "Email sent successfully",

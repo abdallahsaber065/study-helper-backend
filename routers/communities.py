@@ -3,10 +3,13 @@ Router for Community functionality.
 """
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy.orm import Session, joinedload
-from db_config import get_db
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+from sqlalchemy import select, func
+
+from db_config import get_async_db
 from core.security import get_current_user
-from models.models import User, Subject, CommunityMember, CommunitySubjectLink
+from models.models import User, Subject, CommunityMember, CommunitySubjectLink, Summary, McqQuiz
 from schemas.community import (
     CommunityCreate, CommunityRead, CommunityUpdate, CommunityJoinRequest,
     CommunityWithDetails, CommunityMemberRead, CommunityMemberUpdate,
@@ -73,11 +76,14 @@ def _convert_file_to_read(community_file) -> CommunitySubjectFileRead:
 async def create_subject(
     subject: SubjectCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Create a new subject (global)."""
     # Check if subject already exists
-    existing_subject = db.query(Subject).filter(Subject.name == subject.name).first()
+    existing_stmt = select(Subject).where(Subject.name == subject.name)
+    existing_result = await db.execute(existing_stmt)
+    existing_subject = existing_result.scalar_one_or_none()
+    
     if existing_subject:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -86,8 +92,8 @@ async def create_subject(
     
     db_subject = Subject(**subject.dict())
     db.add(db_subject)
-    db.commit()
-    db.refresh(db_subject)
+    await db.commit()
+    await db.refresh(db_subject)
     
     return SubjectRead.from_orm(db_subject)
 
@@ -97,25 +103,31 @@ async def list_subjects(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=100),
     search: Optional[str] = Query(None),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """List all subjects."""
-    query = db.query(Subject)
+    stmt = select(Subject)
     
     if search:
-        query = query.filter(Subject.name.ilike(f"%{search}%"))
+        stmt = stmt.where(Subject.name.ilike(f"%{search}%"))
     
-    subjects = query.offset(skip).limit(limit).all()
+    stmt = stmt.offset(skip).limit(limit)
+    result = await db.execute(stmt)
+    subjects = result.scalars().all()
+    
     return [SubjectRead.from_orm(subject) for subject in subjects]
 
 
 @router.get("/subjects/{subject_id}", response_model=SubjectRead)
 async def get_subject(
     subject_id: int,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Get a specific subject."""
-    subject = db.query(Subject).filter(Subject.id == subject_id).first()
+    stmt = select(Subject).where(Subject.id == subject_id)
+    result = await db.execute(stmt)
+    subject = result.scalar_one_or_none()
+    
     if not subject:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subject not found")
     
@@ -126,11 +138,11 @@ async def get_subject(
 async def create_community(
     community: CommunityCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Create a new community."""
     service = CommunityService(db)
-    created_community = service.create_community(community, current_user)
+    created_community = await service.create_community(community, current_user)
     
     # Add counts
     result = CommunityRead.from_orm(created_community)
@@ -147,11 +159,11 @@ async def list_communities(
     my_communities: bool = Query(False),
     search: Optional[str] = Query(None),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """List communities with filtering options."""
     service = CommunityService(db)
-    communities = service.list_communities(
+    communities = await service.list_communities(
         user=current_user,
         skip=skip,
         limit=limit,
@@ -165,15 +177,19 @@ async def list_communities(
         community_read = CommunityRead.from_orm(community)
         
         # Get member count
-        member_count = db.query(CommunityMember).filter(
+        member_count_stmt = select(func.count(CommunityMember.community_id)).where(
             CommunityMember.community_id == community.id
-        ).count()
+        )
+        member_count_result = await db.execute(member_count_stmt)
+        member_count = member_count_result.scalar()
         community_read.member_count = member_count
         
         # Get subject count
-        subject_count = db.query(CommunitySubjectLink).filter(
+        subject_count_stmt = select(func.count(CommunitySubjectLink.community_id)).where(
             CommunitySubjectLink.community_id == community.id
-        ).count()
+        )
+        subject_count_result = await db.execute(subject_count_stmt)
+        subject_count = subject_count_result.scalar()
         community_read.subject_count = subject_count
         
         result.append(community_read)
@@ -185,28 +201,28 @@ async def list_communities(
 async def get_community(
     community_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Get community details with members and subjects."""
     service = CommunityService(db)
-    community = service.get_community(community_id, current_user)
+    community = await service.get_community(community_id, current_user)
     
     # Get members
-    members = service.get_community_members(community_id, current_user)
+    members = await service.get_community_members(community_id, current_user)
     member_reads = [_convert_member_to_read(member) for member in members]
     
     # Get subjects
-    subjects = service.get_community_subjects(community_id, current_user)
+    subjects = await service.get_community_subjects(community_id, current_user)
     subject_reads = [_convert_subject_link_to_read(subject) for subject in subjects]
     
-    # Build response
-    result = CommunityWithDetails.from_orm(community)
-    result.member_count = len(member_reads)
-    result.subject_count = len(subject_reads)
-    result.members = member_reads
-    result.subjects = subject_reads
+    # Create detailed response
+    community_details = CommunityWithDetails.from_orm(community)
+    community_details.members = member_reads
+    community_details.subjects = subject_reads
+    community_details.member_count = len(member_reads)
+    community_details.subject_count = len(subject_reads)
     
-    return result
+    return community_details
 
 
 @router.put("/{community_id}", response_model=CommunityRead)
@@ -214,17 +230,28 @@ async def update_community(
     community_id: int,
     community_update: CommunityUpdate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
-    """Update community details (admin only)."""
+    """Update community details (admins only)."""
     service = CommunityService(db)
-    updated_community = service.update_community(community_id, community_update, current_user)
+    updated_community = await service.update_community(community_id, community_update, current_user)
     
-    result = CommunityRead.from_orm(updated_community)
     # Add counts
-    stats = service.get_community_stats(community_id, current_user)
-    result.member_count = stats["total_members"]
-    result.subject_count = stats["total_subjects"]
+    result = CommunityRead.from_orm(updated_community)
+    
+    # Get member count
+    member_count_stmt = select(func.count(CommunityMember.community_id)).where(
+        CommunityMember.community_id == community_id
+    )
+    member_count_result = await db.execute(member_count_stmt)
+    result.member_count = member_count_result.scalar()
+    
+    # Get subject count
+    subject_count_stmt = select(func.count(CommunitySubjectLink.community_id)).where(
+        CommunitySubjectLink.community_id == community_id
+    )
+    subject_count_result = await db.execute(subject_count_stmt)
+    result.subject_count = subject_count_result.scalar()
     
     return result
 
@@ -233,11 +260,11 @@ async def update_community(
 async def delete_community(
     community_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
-    """Delete community (creator only)."""
+    """Delete a community (admins only)."""
     service = CommunityService(db)
-    service.delete_community(community_id, current_user)
+    await service.delete_community(community_id, current_user)
 
 
 # ============ Community Membership ============
@@ -246,40 +273,34 @@ async def delete_community(
 async def join_community(
     join_request: CommunityJoinRequest,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Join a community using community code."""
     service = CommunityService(db)
-    membership = service.join_community(join_request, current_user)
-    
-    return {
-        "message": "Successfully joined community",
-        "community_id": membership.community_id,
-        "role": membership.role.value
-    }
+    result = await service.join_community(join_request.community_code, current_user)
+    return result
 
 
 @router.post("/{community_id}/leave", status_code=status.HTTP_204_NO_CONTENT)
 async def leave_community(
     community_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Leave a community."""
     service = CommunityService(db)
-    service.leave_community(community_id, current_user)
+    await service.leave_community(community_id, current_user)
 
 
 @router.get("/{community_id}/members", response_model=List[CommunityMemberRead])
 async def get_community_members(
     community_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Get community members."""
     service = CommunityService(db)
-    members = service.get_community_members(community_id, current_user)
-    
+    members = await service.get_community_members(community_id, current_user)
     return [_convert_member_to_read(member) for member in members]
 
 
@@ -289,12 +310,11 @@ async def update_member_role(
     user_id: int,
     role_update: CommunityMemberUpdate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
-    """Update member role (admin only)."""
+    """Update member role (admins only)."""
     service = CommunityService(db)
-    updated_member = service.update_member_role(community_id, user_id, role_update, current_user)
-    
+    updated_member = await service.update_member_role(community_id, user_id, role_update.role, current_user)
     return _convert_member_to_read(updated_member)
 
 
@@ -303,11 +323,11 @@ async def remove_member(
     community_id: int,
     user_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
-    """Remove member from community (admin only)."""
+    """Remove member from community (admins only)."""
     service = CommunityService(db)
-    service.remove_member(community_id, user_id, current_user)
+    await service.remove_member(community_id, user_id, current_user)
 
 
 # ============ Subject Management ============
@@ -317,13 +337,12 @@ async def add_subject_to_community(
     community_id: int,
     subject_link: CommunitySubjectLinkCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
-    """Add subject to community (admin/moderator only)."""
+    """Add subject to community (admins/moderators only)."""
     service = CommunityService(db)
-    link = service.add_subject_to_community(community_id, subject_link, current_user)
-    
-    return _convert_subject_link_to_read(link)
+    created_link = await service.add_subject_to_community(community_id, subject_link.subject_id, current_user)
+    return _convert_subject_link_to_read(created_link)
 
 
 @router.delete("/{community_id}/subjects/{subject_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -331,23 +350,22 @@ async def remove_subject_from_community(
     community_id: int,
     subject_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
-    """Remove subject from community (admin/moderator only)."""
+    """Remove subject from community (admins/moderators only)."""
     service = CommunityService(db)
-    service.remove_subject_from_community(community_id, subject_id, current_user)
+    await service.remove_subject_from_community(community_id, subject_id, current_user)
 
 
 @router.get("/{community_id}/subjects", response_model=List[CommunitySubjectLinkRead])
 async def get_community_subjects(
     community_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Get subjects linked to community."""
     service = CommunityService(db)
-    subjects = service.get_community_subjects(community_id, current_user)
-    
+    subjects = await service.get_community_subjects(community_id, current_user)
     return [_convert_subject_link_to_read(subject) for subject in subjects]
 
 
@@ -358,13 +376,12 @@ async def add_file_to_community_subject(
     community_id: int,
     file_data: CommunitySubjectFileCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
-    """Add file to community subject (admin/moderator only)."""
+    """Add file to community subject (admins/moderators only)."""
     service = CommunityService(db)
-    community_file = service.add_file_to_community_subject(community_id, file_data, current_user)
-    
-    return _convert_file_to_read(community_file)
+    created_file = await service.add_file_to_community_subject(community_id, file_data, current_user)
+    return _convert_file_to_read(created_file)
 
 
 @router.get("/{community_id}/subjects/{subject_id}/files", response_model=List[CommunitySubjectFileRead])
@@ -372,12 +389,11 @@ async def get_community_subject_files(
     community_id: int,
     subject_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
-    """Get files for a specific subject in community."""
+    """Get files for a specific community subject."""
     service = CommunityService(db)
-    files = service.get_community_subject_files(community_id, subject_id, current_user)
-    
+    files = await service.get_community_subject_files(community_id, subject_id, current_user)
     return [_convert_file_to_read(file) for file in files]
 
 
@@ -387,13 +403,12 @@ async def get_community_subject_files(
 async def get_community_stats(
     community_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     """Get community statistics."""
     service = CommunityService(db)
-    stats = service.get_community_stats(community_id, current_user)
-    
-    return CommunityStats(**stats)
+    stats = await service.get_community_stats(community_id, current_user)
+    return stats
 
 
 # ============ Community Content ============
@@ -404,29 +419,39 @@ async def get_community_summaries(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
-    """Get summaries for a specific community."""
+    """Get summaries created for this community."""
     service = CommunityService(db)
-    service._check_community_member(current_user, community_id)
+    await service._check_member_access(current_user, community_id)
     
-    from models.models import Summary
-    
-    summaries = db.query(Summary).filter(
+    # Get summaries for this community
+    stmt = select(Summary).options(
+        selectinload(Summary.user),
+        selectinload(Summary.physical_file)
+    ).where(
         Summary.community_id == community_id
-    ).offset(skip).limit(limit).all()
+    ).order_by(Summary.created_at.desc()).offset(skip).limit(limit)
     
-    return [
-        {
+    result = await db.execute(stmt)
+    summaries = result.scalars().all()
+    
+    # Convert to dict format with user and file details
+    result_data = []
+    for summary in summaries:
+        summary_dict = {
             "id": summary.id,
             "title": summary.title,
-            "user_id": summary.user_id,
             "created_at": summary.created_at,
             "updated_at": summary.updated_at,
-            "community_id": summary.community_id
+            "user_id": summary.user_id,
+            "username": summary.user.username if summary.user else None,
+            "file_id": summary.physical_file_id,
+            "file_name": summary.physical_file.file_name if summary.physical_file else None
         }
-        for summary in summaries
-    ]
+        result_data.append(summary_dict)
+    
+    return result_data
 
 
 @router.get("/{community_id}/quizzes", response_model=List[dict])
@@ -435,28 +460,39 @@ async def get_community_quizzes(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
-    """Get quizzes for a specific community."""
+    """Get quizzes created for this community."""
     service = CommunityService(db)
-    service._check_community_member(current_user, community_id)
+    await service._check_member_access(current_user, community_id)
     
-    from models.models import McqQuiz
-    
-    quizzes = db.query(McqQuiz).filter(
+    # Get quizzes for this community
+    stmt = select(McqQuiz).options(
+        selectinload(McqQuiz.creator),
+        selectinload(McqQuiz.subject)
+    ).where(
         McqQuiz.community_id == community_id
-    ).offset(skip).limit(limit).all()
+    ).order_by(McqQuiz.created_at.desc()).offset(skip).limit(limit)
     
-    return [
-        {
+    result = await db.execute(stmt)
+    quizzes = result.scalars().all()
+    
+    # Convert to dict format with user and subject details
+    result_data = []
+    for quiz in quizzes:
+        quiz_dict = {
             "id": quiz.id,
             "title": quiz.title,
             "description": quiz.description,
             "difficulty_level": quiz.difficulty_level,
-            "user_id": quiz.user_id,
-            "created_at": quiz.created_at,
             "is_public": quiz.is_public,
-            "community_id": quiz.community_id
+            "created_at": quiz.created_at,
+            "updated_at": quiz.updated_at,
+            "user_id": quiz.user_id,
+            "username": quiz.creator.username if quiz.creator else None,
+            "subject_id": quiz.subject_id,
+            "subject_name": quiz.subject.name if quiz.subject else None
         }
-        for quiz in quizzes
-    ] 
+        result_data.append(quiz_dict)
+    
+    return result_data 

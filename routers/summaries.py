@@ -182,7 +182,7 @@ async def update_summary(
         )
 
     # Update fields if provided
-    update_data = summary_update.dict(exclude_unset=True)
+    update_data = summary_update.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(summary, field, value)
 

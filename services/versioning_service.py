@@ -177,7 +177,7 @@ class ContentVersioningService:
         # Convert to read schemas
         version_reads = []
         for version in versions:
-            version_read = ContentVersionRead.from_orm(version)
+            version_read = ContentVersionRead.model_validate(version)
             
             # Add user details
             if version.user_creator:
@@ -210,7 +210,7 @@ class ContentVersioningService:
         if not version:
             return None
 
-        version_read = ContentVersionRead.from_orm(version)
+        version_read = ContentVersionRead.model_validate(version)
         
         # Add user details
         if version.user_creator:

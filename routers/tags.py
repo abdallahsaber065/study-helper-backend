@@ -45,7 +45,7 @@ async def create_tag(
     await db.commit()
     await db.refresh(new_tag)
     
-    return QuestionTagRead.from_orm(new_tag)
+    return QuestionTagRead.model_validate(new_tag)
 
 
 @router.get("/", response_model=List[QuestionTagRead])
@@ -72,7 +72,7 @@ async def list_tags(
     result = await db.execute(stmt)
     tags = result.scalars().all()
     
-    return [QuestionTagRead.from_orm(tag) for tag in tags]
+    return [QuestionTagRead.model_validate(tag) for tag in tags]
 
 
 @router.get("/{tag_id}", response_model=QuestionTagRead)
@@ -88,7 +88,7 @@ async def get_tag(tag_id: int, db: AsyncSession = Depends(get_async_db)):
             detail="Tag not found"
         )
     
-    return QuestionTagRead.from_orm(tag)
+    return QuestionTagRead.model_validate(tag)
 
 
 @router.put("/{tag_id}", response_model=QuestionTagRead)
@@ -126,14 +126,14 @@ async def update_tag(
             )
     
     # Update tag fields
-    update_dict = update_data.dict(exclude_unset=True)
+    update_dict = update_data.model_dump(exclude_unset=True)
     for field, value in update_dict.items():
         setattr(tag, field, value)
     
     await db.commit()
     await db.refresh(tag)
     
-    return QuestionTagRead.from_orm(tag)
+    return QuestionTagRead.model_validate(tag)
 
 
 @router.delete("/{tag_id}", status_code=status.HTTP_204_NO_CONTENT)

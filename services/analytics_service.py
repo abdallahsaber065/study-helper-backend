@@ -99,7 +99,7 @@ class ContentAnalyticsService:
         await self.db.commit()
         await self.db.refresh(analytics)
 
-        return ContentAnalyticsRead.from_orm(analytics)
+        return ContentAnalyticsRead.model_validate(analytics)
 
     async def get_analytics(
         self,
@@ -114,7 +114,7 @@ class ContentAnalyticsService:
             )
 
         analytics = await self._ensure_analytics_record(content_type, content_id)
-        return ContentAnalyticsRead.from_orm(analytics)
+        return ContentAnalyticsRead.model_validate(analytics)
 
     def calculate_engagement_score(self, analytics: ContentAnalytics) -> float:
         """Calculate engagement score based on all metrics."""
@@ -246,7 +246,7 @@ class ContentAnalyticsService:
             summary = ContentAnalyticsSummary(
                 content_type=analytics.content_type,
                 content_id=analytics.content_id,
-                analytics=ContentAnalyticsRead.from_orm(analytics),
+                analytics=ContentAnalyticsRead.model_validate(analytics),
                 engagement_score=engagement_score,
                 popularity_rank=i
             )

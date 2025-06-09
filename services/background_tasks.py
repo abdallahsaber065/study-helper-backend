@@ -237,7 +237,7 @@ async def analyze_content_engagement(content_type: ContentTypeEnum, content_id: 
                 analysis["recommendations"].append("Increase content visibility and promotion")
             
             return {
-                "metrics": metrics.dict(),
+                "metrics": metrics.model_dump(),
                 "analysis": analysis
             }
     except Exception as e:

@@ -38,7 +38,7 @@ async def get_user_preferences(
         await db.commit()
         await db.refresh(preferences)
     
-    return UserPreferenceRead.from_orm(preferences)
+    return UserPreferenceRead.model_validate(preferences)
 
 
 @router.put("", response_model=PreferenceUpdateResponse)
@@ -66,7 +66,7 @@ async def update_user_preferences(
         await db.refresh(preferences)
     
     # Update provided fields
-    update_dict = update_data.dict(exclude_unset=True)
+    update_dict = update_data.model_dump(exclude_unset=True)
     for field, value in update_dict.items():
         setattr(preferences, field, value)
     
@@ -75,7 +75,7 @@ async def update_user_preferences(
     
     return PreferenceUpdateResponse(
         message="Preferences updated successfully",
-        preferences=UserPreferenceRead.from_orm(preferences)
+        preferences=UserPreferenceRead.model_validate(preferences)
     )
 
 
@@ -111,5 +111,5 @@ async def reset_user_preferences(
     
     return PreferenceUpdateResponse(
         message="Preferences reset to default values",
-        preferences=UserPreferenceRead.from_orm(preferences)
+        preferences=UserPreferenceRead.model_validate(preferences)
     ) 

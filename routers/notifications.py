@@ -56,7 +56,7 @@ async def list_notifications(
     notifications = result.scalars().all()
     
     return NotificationListResponse(
-        notifications=[NotificationRead.from_orm(notif) for notif in notifications],
+        notifications=[NotificationRead.model_validate(notif) for notif in notifications],
         total_count=total_count,
         unread_count=0,  # Will be calculated separately if needed
         has_more=(skip + limit) < total_count
@@ -103,7 +103,7 @@ async def mark_notification_read(
     await db.commit()
     await db.refresh(notification)
     
-    return NotificationRead.from_orm(notification)
+    return NotificationRead.model_validate(notification)
 
 
 @router.put("/mark-all-read")

@@ -32,7 +32,7 @@ async def create_question(
 ):
     """Create a new MCQ question."""
     # Create the question
-    question_data = question.dict(exclude={"tag_ids"})
+    question_data = question.model_dump(exclude={"tag_ids"})
     db_question = McqQuestion(**question_data, user_id=current_user.id)
     db.add(db_question)
     await db.commit()
@@ -132,7 +132,7 @@ async def update_question(
         )
     
     # Update question fields
-    update_data = question_update.dict(exclude_unset=True, exclude={"tag_ids"})
+    update_data = question_update.model_dump(exclude_unset=True, exclude={"tag_ids"})
     for field, value in update_data.items():
         setattr(question, field, value)
     

@@ -214,7 +214,7 @@ class NotificationService:
         # Convert to read schemas
         notification_reads = []
         for notif in notifications:
-            notification_read = NotificationRead.from_orm(notif)
+            notification_read = NotificationRead.model_validate(notif)
             
             # Add actor details
             if notif.actor_user:

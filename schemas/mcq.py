@@ -212,7 +212,7 @@ def _convert_question_to_read(question: McqQuestion) -> McqQuestionRead:
         "user_id": question.user_id,
         "created_at": question.created_at,
         "updated_at": question.updated_at,
-        "tags": [QuestionTagRead.from_orm(link.tag) for link in question.tag_links] if hasattr(question, 'tag_links') else []
+        "tags": [QuestionTagRead.model_validate(link.tag) for link in question.tag_links] if hasattr(question, 'tag_links') else []
     }
     return McqQuestionRead(**question_dict)
 

@@ -290,7 +290,7 @@ async def update_current_user(
     logger.info("User profile update request", username=current_user.username, user_id=current_user.id)
     
     # Update only provided fields
-    update_data = user_update.dict(exclude_unset=True)
+    update_data = user_update.model_dump(exclude_unset=True)
     
     # Check if email is being updated and if it's already taken
     if "email" in update_data:

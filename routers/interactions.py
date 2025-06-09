@@ -46,7 +46,7 @@ async def _verify_content_exists(content_type: ContentTypeEnum, content_id: int,
 
 def _convert_comment_to_read(comment: ContentComment, include_replies: bool = False) -> ContentCommentRead:
     """Convert ContentComment model to read schema with author details."""
-    comment_read = ContentCommentRead.from_orm(comment)
+    comment_read = ContentCommentRead.model_validate(comment)
     
     # Add author details
     if hasattr(comment, 'author') and comment.author:
@@ -319,7 +319,7 @@ async def create_or_update_rating(
         
         return RatingCreateResponse(
             message="Rating updated successfully",
-            rating=ContentRatingRead.from_orm(existing_rating)
+            rating=ContentRatingRead.model_validate(existing_rating)
         )
     else:
         # Create new rating
@@ -337,7 +337,7 @@ async def create_or_update_rating(
         
         return RatingCreateResponse(
             message="Rating created successfully",
-            rating=ContentRatingRead.from_orm(new_rating)
+            rating=ContentRatingRead.model_validate(new_rating)
         )
 
 
@@ -356,27 +356,27 @@ async def get_content_ratings(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"{content_type.value.title()} not found"
         )
-    
+
     stmt = select(ContentRating).options(
         selectinload(ContentRating.user)
     ).where(
         ContentRating.content_type == content_type,
         ContentRating.content_id == content_id
     ).order_by(ContentRating.created_at.desc()).offset(skip).limit(limit)
-    
+
     result = await db.execute(stmt)
     ratings = result.scalars().all()
-    
+
     rating_reads = []
     for rating in ratings:
-        rating_read = ContentRatingRead.from_orm(rating)
+        rating_read = ContentRatingRead.model_validate(rating)
         # Add user details
         if rating.user:
-            rating_read.user_username = rating.user.username
-            rating_read.user_first_name = rating.user.first_name
-            rating_read.user_last_name = rating.user.last_name
+            rating_read.username = rating.user.username
+            rating_read.first_name = rating.user.first_name
+            rating_read.last_name = rating.user.last_name
         rating_reads.append(rating_read)
-    
+
     return rating_reads
 
 

@@ -28,7 +28,7 @@ async def get_current_user_profile(
     result = await db.execute(stmt)
     user = result.scalar_one()
     
-    return UserRead.from_orm(user)
+    return UserRead.model_validate(user)
 
 
 @router.put("/me", response_model=UserRead)
@@ -53,7 +53,7 @@ async def update_current_user_profile(
     await db.commit()
     await db.refresh(user)
     
-    return UserRead.from_orm(user)
+    return UserRead.model_validate(user)
 
 
 @router.get("/", response_model=List[UserRead])
@@ -93,7 +93,7 @@ async def list_users(
     result = await db.execute(stmt)
     users = result.scalars().all()
     
-    return [UserRead.from_orm(user) for user in users]
+    return [UserRead.model_validate(user) for user in users]
 
 
 @router.get("/{user_id}", response_model=UserRead)
@@ -113,7 +113,7 @@ async def get_user_by_id(
             detail="User not found"
         )
     
-    return UserRead.from_orm(user)
+    return UserRead.model_validate(user)
 
 
 @router.put("/{user_id}/role")
@@ -268,7 +268,7 @@ async def get_user_by_username(
             detail="Not authorized to view this user's profile"
         )
     
-    return UserRead.from_orm(user)
+    return UserRead.model_validate(user)
 
 
 @router.get("/me/api-usage")

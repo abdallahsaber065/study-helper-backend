@@ -89,7 +89,7 @@ async def create_quiz(
             )
     
     # Create the quiz
-    quiz_data = quiz.dict(exclude={"question_ids"})
+    quiz_data = quiz.model_dump(exclude={"question_ids"})
     db_quiz = McqQuiz(**quiz_data, user_id=current_user.id)
     db.add(db_quiz)
     await db.commit()
@@ -117,7 +117,7 @@ async def create_quiz(
     count_result = await db.execute(count_stmt)
     question_count = count_result.scalar()
     
-    result = McqQuizRead.from_orm(db_quiz)
+    result = McqQuizRead.model_validate(db_quiz)
     result.question_count = question_count
     return result
 
@@ -157,7 +157,7 @@ async def list_quizzes(
         count_result = await db.execute(count_stmt)
         question_count = count_result.scalar()
         
-        quiz_data = McqQuizRead.from_orm(quiz)
+        quiz_data = McqQuizRead.model_validate(quiz)
         quiz_data.question_count = question_count
         result.append(quiz_data)
     
@@ -354,7 +354,7 @@ async def get_quiz(
         if question:
             questions.append(_convert_question_to_read(question))
     
-    result = McqQuizWithQuestions.from_orm(quiz)
+    result = McqQuizWithQuestions.model_validate(quiz)
     result.questions = questions
     result.question_count = len(questions)
     return result
@@ -394,7 +394,7 @@ async def update_quiz(
             )
     
     # Update basic fields
-    update_data = quiz_update.dict(exclude_unset=True, exclude={"question_ids"})
+    update_data = quiz_update.model_dump(exclude_unset=True, exclude={"question_ids"})
     for field, value in update_data.items():
         setattr(quiz, field, value)
     
@@ -430,7 +430,7 @@ async def update_quiz(
     count_result = await db.execute(count_stmt)
     question_count = count_result.scalar()
     
-    result = McqQuizRead.from_orm(quiz)
+    result = McqQuizRead.model_validate(quiz)
     result.question_count = question_count
     return result
 

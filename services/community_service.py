@@ -102,7 +102,7 @@ class CommunityService:
 
         # Create community
         community = Community(
-            **community_data.dict(),
+            **community_data.model_dump(),
             creator_id=creator.id,
             community_code=await self._generate_community_code()
         )
@@ -199,7 +199,7 @@ class CommunityService:
             )
 
         # Update fields
-        update_dict = update_data.dict(exclude_unset=True)
+        update_dict = update_data.model_dump(exclude_unset=True)
         for field, value in update_dict.items():
             setattr(community, field, value)
 

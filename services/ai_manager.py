@@ -450,7 +450,7 @@ class AIManager(Generic[T]):
 
             if expired_entry:
                 # Update the expired entry
-                for field, value in cache_data.dict().items():
+                for field, value in cache_data.model_dump().items():
                     setattr(expired_entry, field, value)
                 expired_entry.updated_at = datetime.now(timezone.utc)
                 await self.db.commit()
@@ -458,7 +458,7 @@ class AIManager(Generic[T]):
                 return expired_entry
             else:
                 # Create a new cache entry
-                new_cache_entry = GeminiFileCache(**cache_data.dict())
+                new_cache_entry = GeminiFileCache(**cache_data.model_dump())
                 self.db.add(new_cache_entry)
                 await self.db.commit()
                 await self.db.refresh(new_cache_entry)

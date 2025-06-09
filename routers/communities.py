@@ -9,7 +9,7 @@ from sqlalchemy import select, func
 
 from db_config import get_async_db
 from core.security import get_current_user
-from models.models import User, Subject, CommunityMember, CommunitySubjectLink, Summary, McqQuiz
+from models.models import CommunitySubjectFile, User, Subject, CommunityMember, CommunitySubjectLink, Summary, McqQuiz
 from schemas.community import (
     CommunityCreate, CommunityRead, CommunityUpdate, CommunityJoinRequest,
     CommunityWithDetails, CommunityMemberRead, CommunityMemberUpdate,
@@ -23,7 +23,7 @@ from services.community_service import CommunityService
 router = APIRouter(prefix="/communities", tags=["Communities"])
 
 
-def _convert_member_to_read(member) -> CommunityMemberRead:
+def _convert_member_to_read(member: CommunityMember) -> CommunityMemberRead:
     """Convert CommunityMember with user data to read format."""
     return CommunityMemberRead(
         community_id=member.community_id,
@@ -48,7 +48,7 @@ def _convert_subject_link_to_read(link) -> CommunitySubjectLinkRead:
     )
 
 
-def _convert_file_to_read(community_file) -> CommunitySubjectFileRead:
+def _convert_file_to_read(community_file: CommunitySubjectFile) -> CommunitySubjectFileRead:
     """Convert CommunitySubjectFile with related data to read format."""
     return CommunitySubjectFileRead(
         id=community_file.id,
@@ -90,12 +90,12 @@ async def create_subject(
             detail="Subject with this name already exists"
         )
     
-    db_subject = Subject(**subject.dict())
+    db_subject = Subject(**subject.model_dump())
     db.add(db_subject)
     await db.commit()
     await db.refresh(db_subject)
     
-    return SubjectRead.from_orm(db_subject)
+    return SubjectRead.model_validate(db_subject)
 
 
 @router.get("/subjects", response_model=List[SubjectRead])
@@ -115,7 +115,7 @@ async def list_subjects(
     result = await db.execute(stmt)
     subjects = result.scalars().all()
     
-    return [SubjectRead.from_orm(subject) for subject in subjects]
+    return [SubjectRead.model_validate(subject) for subject in subjects]
 
 
 @router.get("/subjects/{subject_id}", response_model=SubjectRead)
@@ -131,7 +131,7 @@ async def get_subject(
     if not subject:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subject not found")
     
-    return SubjectRead.from_orm(subject)
+    return SubjectRead.model_validate(subject)
 
 
 @router.post("", response_model=CommunityRead, status_code=status.HTTP_201_CREATED)
@@ -145,7 +145,7 @@ async def create_community(
     created_community = await service.create_community(community, current_user)
     
     # Add counts
-    result = CommunityRead.from_orm(created_community)
+    result = CommunityRead.model_validate(created_community)
     result.member_count = 1  # Creator is the first member
     result.subject_count = 0
     
@@ -174,7 +174,7 @@ async def list_communities(
     # Add counts for each community
     result = []
     for community in communities:
-        community_read = CommunityRead.from_orm(community)
+        community_read = CommunityRead.model_validate(community)
         
         # Get member count
         member_count_stmt = select(func.count(CommunityMember.community_id)).where(
@@ -216,7 +216,7 @@ async def get_community(
     subject_reads = [_convert_subject_link_to_read(subject) for subject in subjects]
     
     # Create detailed response
-    community_details = CommunityWithDetails.from_orm(community)
+    community_details = CommunityWithDetails.model_validate(community)
     community_details.members = member_reads
     community_details.subjects = subject_reads
     community_details.member_count = len(member_reads)
@@ -237,7 +237,7 @@ async def update_community(
     updated_community = await service.update_community(community_id, community_update, current_user)
     
     # Add counts
-    result = CommunityRead.from_orm(updated_community)
+    result = CommunityRead.model_validate(updated_community)
     
     # Get member count
     member_count_stmt = select(func.count(CommunityMember.community_id)).where(

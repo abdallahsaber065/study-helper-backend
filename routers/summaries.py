@@ -41,13 +41,11 @@ async def generate_combined_summary(
     """
     # Check community access if community_id is provided
     if community_id:
-        # CommunityService needs to be async now
+        from services.community_service import CommunityService
         community_service = CommunityService(db)
         try:
-            # Assuming _check_admin_or_moderator is sync or doesn't hit DB async within router
-            # If it hits DB, it needs to be awaited or logic moved to service
-            # Based on previous changes, CommunityService is async, this check likely is too.
-            await community_service._check_admin_or_moderator(current_user.id, community_id) # Corrected call to pass user_id
+            # Check if user is admin or moderator of the community
+            await community_service._check_admin_or_moderator(current_user, community_id)
         except HTTPException:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -140,14 +138,12 @@ async def get_summary_by_id(
         )
 
     # Check if user has access to the summary
-    # This logic needs to be updated if community access check becomes complex async operation
     if summary.user_id != current_user.id:
-         # Check if summary is shared via a community - This check is more complex and likely async.
-         # Need to check Community.summaries relationship or CommunityMember table
-         from services.community_service import CommunityService
-         community_service = CommunityService(db)
-         has_access = await community_service.has_summary_access(summary_id, current_user.id)
-         if not has_access:
+        # Check if summary is shared via a community
+        from services.community_service import CommunityService
+        community_service = CommunityService(db)
+        has_access = await community_service.has_summary_access(summary_id, current_user.id)
+        if not has_access:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You don't have access to this summary"

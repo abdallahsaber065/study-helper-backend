@@ -4,10 +4,10 @@ Community Service for managing communities, memberships, and content curation.
 import secrets
 import string
 from datetime import datetime, timezone
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload, selectinload
-from sqlalchemy import select, func
+from sqlalchemy.orm import selectinload
+from sqlalchemy import select, func, delete
 from fastapi import HTTPException, status
 from models.models import (
     User, Community, CommunityMember, CommunitySubjectLink, 
@@ -16,9 +16,8 @@ from models.models import (
 )
 from schemas.community import (
     CommunityCreate, CommunityUpdate, CommunityJoinRequest,
-    CommunityMemberCreate, CommunityMemberUpdate,
-    CommunitySubjectLinkCreate, CommunitySubjectFileCreate,
-    CommunitySubjectFileUpdate
+    CommunityMemberUpdate, CommunitySubjectLinkCreate, 
+    CommunitySubjectFileCreate
 )
 from core.config import settings
 
@@ -75,6 +74,36 @@ class CommunityService:
             )
         
         return membership
+
+    async def _check_member_access(self, user: User, community_id: int) -> CommunityMember:
+        """Check if user has access to the community (alias for _check_community_member)."""
+        return await self._check_community_member(user, community_id)
+
+    async def has_summary_access(self, summary_id: int, user_id: int) -> bool:
+        """Check if user has access to a summary through community membership."""
+        # Get the summary with community info
+        stmt = select(Summary).where(Summary.id == summary_id)
+        result = await self.db.execute(stmt)
+        summary = result.scalar_one_or_none()
+        
+        if not summary:
+            return False
+            
+        # If summary belongs to user, they have access
+        if summary.user_id == user_id:
+            return True
+            
+        # If summary is associated with a community, check membership
+        if summary.community_id:
+            membership_stmt = select(CommunityMember).where(
+                CommunityMember.community_id == summary.community_id,
+                CommunityMember.user_id == user_id
+            )
+            membership_result = await self.db.execute(membership_stmt)
+            membership = membership_result.scalar_one_or_none()
+            return membership is not None
+            
+        return False
 
     async def create_community(self, community_data: CommunityCreate, creator: User) -> Community:
         """Create a new community."""
@@ -151,8 +180,14 @@ class CommunityService:
 
         return community
 
-    async def list_communities(self, user: User, skip: int = 0, limit: int = 100, 
-                        my_communities: bool = False, search: Optional[str] = None) -> List[Community]:
+    async def list_communities(
+        self, 
+        user: User, 
+        skip: int = 0, 
+        limit: int = 100, 
+        my_communities: bool = False, 
+        search: Optional[str] = None
+    ) -> List[Community]:
         """List communities with filtering."""
         
         if my_communities:
@@ -170,7 +205,7 @@ class CommunityService:
             
             stmt = select(Community).where(
                 (Community.is_private == False) | 
-                (Community.id.in_(user_community_ids))
+                (Community.id.in_(user_community_ids) if user_community_ids else False)
             )
 
         if search:
@@ -209,7 +244,7 @@ class CommunityService:
         
         return community
 
-    async def delete_community(self, community_id: int, user: User):
+    async def delete_community(self, community_id: int, user: User) -> None:
         """Delete community (creator only)."""
         community = await self.get_community(community_id, user)
         
@@ -219,10 +254,10 @@ class CommunityService:
                 detail="Only community creator can delete the community"
             )
 
-        self.db.delete(community)
+        await self.db.delete(community)
         await self.db.commit()
 
-    async def join_community(self, join_request: CommunityJoinRequest, user: User) -> CommunityMember:
+    async def join_community(self, community_code: str, user: User) -> Dict[str, Any]:
         """Join a community using community code."""
         # Check user's membership limit
         count_stmt = select(func.count(CommunityMember.id)).where(CommunityMember.user_id == user.id)
@@ -236,7 +271,7 @@ class CommunityService:
             )
 
         # Find community by code
-        stmt = select(Community).where(Community.community_code == join_request.community_code)
+        stmt = select(Community).where(Community.community_code == community_code)
         result = await self.db.execute(stmt)
         community = result.scalar_one_or_none()
         
@@ -278,9 +313,13 @@ class CommunityService:
         await self.db.commit()
         await self.db.refresh(membership)
         
-        return membership
+        return {
+            "message": f"Successfully joined {community.name}",
+            "community_id": community.id,
+            "community_name": community.name
+        }
 
-    async def leave_community(self, community_id: int, user: User):
+    async def leave_community(self, community_id: int, user: User) -> None:
         """Leave a community."""
         community = await self.get_community(community_id, user)
         
@@ -304,7 +343,7 @@ class CommunityService:
                 detail="Not a member of this community"
             )
 
-        self.db.delete(membership)
+        await self.db.delete(membership)
         await self.db.commit()
 
     async def get_community_members(self, community_id: int, user: User) -> List[CommunityMember]:
@@ -320,8 +359,13 @@ class CommunityService:
         
         return members
 
-    async def update_member_role(self, community_id: int, target_user_id: int, 
-                              role_update: CommunityMemberUpdate, user: User) -> CommunityMember:
+    async def update_member_role(
+        self, 
+        community_id: int, 
+        target_user_id: int, 
+        new_role: CommunityRoleEnum, 
+        user: User
+    ) -> CommunityMember:
         """Update member role (admin only)."""
         # Check if current user is admin
         await self._check_admin_or_moderator(user, community_id)
@@ -347,13 +391,13 @@ class CommunityService:
                 detail="Member not found"
             )
 
-        membership.role = role_update.role
+        membership.role = new_role
         await self.db.commit()
         await self.db.refresh(membership)
         
         return membership
 
-    async def remove_member(self, community_id: int, target_user_id: int, user: User):
+    async def remove_member(self, community_id: int, target_user_id: int, user: User) -> None:
         """Remove member from community (admin only)."""
         # Check if current user is admin
         await self._check_admin_or_moderator(user, community_id)
@@ -379,17 +423,21 @@ class CommunityService:
                 detail="Member not found"
             )
 
-        self.db.delete(membership)
+        await self.db.delete(membership)
         await self.db.commit()
 
-    async def add_subject_to_community(self, community_id: int, subject_link: CommunitySubjectLinkCreate, 
-                                    user: User) -> CommunitySubjectLink:
+    async def add_subject_to_community(
+        self, 
+        community_id: int, 
+        subject_id: int, 
+        user: User
+    ) -> CommunitySubjectLink:
         """Add subject to community (admin/moderator only)."""
         # Check permissions
         await self._check_admin_or_moderator(user, community_id)
         
         # Check if subject exists
-        stmt = select(Subject).where(Subject.id == subject_link.subject_id)
+        stmt = select(Subject).where(Subject.id == subject_id)
         result = await self.db.execute(stmt)
         subject = result.scalar_one_or_none()
         if not subject:
@@ -401,7 +449,7 @@ class CommunityService:
         # Check if already linked
         existing_stmt = select(CommunitySubjectLink).where(
             CommunitySubjectLink.community_id == community_id,
-            CommunitySubjectLink.subject_id == subject_link.subject_id
+            CommunitySubjectLink.subject_id == subject_id
         )
         existing_result = await self.db.execute(existing_stmt)
         existing_link = existing_result.scalar_one_or_none()
@@ -415,7 +463,7 @@ class CommunityService:
         # Create link
         link = CommunitySubjectLink(
             community_id=community_id,
-            subject_id=subject_link.subject_id,
+            subject_id=subject_id,
             added_by_user_id=user.id
         )
         
@@ -425,7 +473,7 @@ class CommunityService:
         
         return link
 
-    async def remove_subject_from_community(self, community_id: int, subject_id: int, user: User):
+    async def remove_subject_from_community(self, community_id: int, subject_id: int, user: User) -> None:
         """Remove subject from community (admin/moderator only)."""
         # Check permissions
         await self._check_admin_or_moderator(user, community_id)
@@ -443,7 +491,7 @@ class CommunityService:
                 detail="Subject not linked to this community"
             )
 
-        self.db.delete(link)
+        await self.db.delete(link)
         await self.db.commit()
 
     async def get_community_subjects(self, community_id: int, user: User) -> List[CommunitySubjectLink]:
@@ -460,8 +508,12 @@ class CommunityService:
         
         return subjects
 
-    async def add_file_to_community_subject(self, community_id: int, file_data: CommunitySubjectFileCreate, 
-                                         user: User) -> CommunitySubjectFile:
+    async def add_file_to_community_subject(
+        self, 
+        community_id: int, 
+        file_data: CommunitySubjectFileCreate, 
+        user: User
+    ) -> CommunitySubjectFile:
         """Add file to community subject (admin/moderator only)."""
         # Check permissions
         await self._check_admin_or_moderator(user, community_id)
@@ -525,7 +577,12 @@ class CommunityService:
         
         return community_file
 
-    async def get_community_subject_files(self, community_id: int, subject_id: int, user: User) -> List[CommunitySubjectFile]:
+    async def get_community_subject_files(
+        self, 
+        community_id: int, 
+        subject_id: int, 
+        user: User
+    ) -> List[CommunitySubjectFile]:
         """Get files for a specific subject in community."""
         # Check access
         await self._check_community_member(user, community_id)
@@ -543,18 +600,18 @@ class CommunityService:
         
         return files
 
-    async def get_community_stats(self, community_id: int, user: User) -> dict:
+    async def get_community_stats(self, community_id: int, user: User) -> Dict[str, Any]:
         """Get community statistics."""
         # Check access
         await self._check_community_member(user, community_id)
         
-        # Count members
-        stmt = select(func.count(CommunityMember.id)).where(CommunityMember.community_id == community_id)
+        # Count members (CommunityMember uses composite primary key, so count using community_id)
+        stmt = select(func.count(CommunityMember.community_id)).where(CommunityMember.community_id == community_id)
         result = await self.db.execute(stmt)
         member_count = result.scalar()
         
-        # Count subjects
-        stmt = select(func.count(CommunitySubjectLink.id)).where(CommunitySubjectLink.community_id == community_id)
+        # Count subjects (CommunitySubjectLink uses composite primary key, so count using community_id)
+        stmt = select(func.count(CommunitySubjectLink.community_id)).where(CommunitySubjectLink.community_id == community_id)
         result = await self.db.execute(stmt)
         subject_count = result.scalar()
         

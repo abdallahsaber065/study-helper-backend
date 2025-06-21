@@ -117,8 +117,21 @@ async def create_quiz(
     count_result = await db.execute(count_stmt)
     question_count = count_result.scalar()
     
-    result = McqQuizRead.model_validate(db_quiz)
-    result.question_count = question_count
+    # Create result manually to avoid lazy loading issues
+    result = McqQuizRead(
+        id=db_quiz.id,
+        title=db_quiz.title,
+        description=db_quiz.description,
+        difficulty_level=db_quiz.difficulty_level,
+        is_active=db_quiz.is_active,
+        is_public=db_quiz.is_public,
+        subject_id=db_quiz.subject_id,
+        community_id=db_quiz.community_id,
+        user_id=db_quiz.user_id,
+        created_at=db_quiz.created_at,
+        updated_at=db_quiz.updated_at,
+        question_count=question_count
+    )
     return result
 
 
@@ -157,8 +170,21 @@ async def list_quizzes(
         count_result = await db.execute(count_stmt)
         question_count = count_result.scalar()
         
-        quiz_data = McqQuizRead.model_validate(quiz)
-        quiz_data.question_count = question_count
+        # Create quiz data manually to avoid lazy loading issues
+        quiz_data = McqQuizRead(
+            id=quiz.id,
+            title=quiz.title,
+            description=quiz.description,
+            difficulty_level=quiz.difficulty_level,
+            is_active=quiz.is_active,
+            is_public=quiz.is_public,
+            subject_id=quiz.subject_id,
+            community_id=quiz.community_id,
+            user_id=quiz.user_id,
+            created_at=quiz.created_at,
+            updated_at=quiz.updated_at,
+            question_count=question_count
+        )
         result.append(quiz_data)
     
     return result
@@ -354,9 +380,22 @@ async def get_quiz(
         if question:
             questions.append(_convert_question_to_read(question))
     
-    result = McqQuizWithQuestions.model_validate(quiz)
-    result.questions = questions
-    result.question_count = len(questions)
+    # Create result manually to avoid lazy loading issues
+    result = McqQuizWithQuestions(
+        id=quiz.id,
+        title=quiz.title,
+        description=quiz.description,
+        difficulty_level=quiz.difficulty_level,
+        is_active=quiz.is_active,
+        is_public=quiz.is_public,
+        subject_id=quiz.subject_id,
+        community_id=quiz.community_id,
+        user_id=quiz.user_id,
+        created_at=quiz.created_at,
+        updated_at=quiz.updated_at,
+        questions=questions,
+        question_count=len(questions)
+    )
     return result
 
 
@@ -430,8 +469,21 @@ async def update_quiz(
     count_result = await db.execute(count_stmt)
     question_count = count_result.scalar()
     
-    result = McqQuizRead.model_validate(quiz)
-    result.question_count = question_count
+    # Create result manually to avoid lazy loading issues
+    result = McqQuizRead(
+        id=quiz.id,
+        title=quiz.title,
+        description=quiz.description,
+        difficulty_level=quiz.difficulty_level,
+        is_active=quiz.is_active,
+        is_public=quiz.is_public,
+        subject_id=quiz.subject_id,
+        community_id=quiz.community_id,
+        user_id=quiz.user_id,
+        created_at=quiz.created_at,
+        updated_at=quiz.updated_at,
+        question_count=question_count
+    )
     return result
 
 

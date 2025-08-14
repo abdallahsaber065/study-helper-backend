@@ -396,8 +396,8 @@ async def forgot_password(
     db.add(token_record)
     await db.commit()
     
-    # Send password reset email
-    reset_url = f"{request.base_url}auth/reset-password/{raw_token}"
+    # Send password reset email with frontend URL
+    reset_url = f"{settings.frontend_url}/reset-password/{raw_token}"
     email_service = get_email_service()
     await email_service.send_password_reset_email(
         to_email=user.email,
@@ -475,11 +475,12 @@ async def reset_password(
     
     await db.commit()
     
-    # Send password changed notification
+    # Send password changed notification with frontend URL for login
     email_service = get_email_service()
     await email_service.send_password_changed_notification(
         to_email=user.email,
-        user_name=user.email.split("@")[0]
+        user_name=user.email.split("@")[0],
+        login_url=f"{settings.frontend_url}/login"
     )
     
     return MessageResponse(
@@ -520,8 +521,8 @@ async def _send_verification_email(
         db.add(token_record)
         await db.commit()
         
-        # Send verification email
-        verification_url = f"{request.base_url}auth/verify-email/{raw_token}"
+        # Send verification email with frontend URL
+        verification_url = f"{settings.frontend_url}/verify-email/{raw_token}"
         email_service = get_email_service()
         
         success = await email_service.send_verification_email(
@@ -536,6 +537,16 @@ async def _send_verification_email(
                 detail="Failed to send verification email"
             )
             
+    except Exception as e:
+        await db.rollback()
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to send verification email"
+        )
+        
+    
     except Exception as e:
         await db.rollback()
         if isinstance(e, HTTPException):

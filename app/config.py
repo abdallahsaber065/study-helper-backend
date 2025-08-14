@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     # Server
     host: str = Field(default="127.0.0.1", description="Server host")
     port: int = Field(default=8000, description="Server port")
-
+    frontend_url: str = Field(default="http://localhost:3000", description="Frontend URL")
     # Security
     secret_key: str = Field(..., description="Secret key for JWT tokens")
     access_token_expire_minutes: int = Field(

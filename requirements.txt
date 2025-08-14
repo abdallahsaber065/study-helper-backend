@@ -1,0 +1,59 @@
+# Study Assistant Backend - Core Dependencies
+# Generated from pyproject.toml for pip users
+# For development, use: pip install -r requirements.txt -r requirements-dev.txt
+
+# Core Framework
+fastapi>=0.110.0,<0.111.0
+uvicorn[standard]>=0.27.0,<0.28.0
+gunicorn>=21.2.0,<22.0.0
+
+# Database & ORM
+sqlalchemy>=2.0.25,<2.1.0
+alembic>=1.13.1,<2.0.0
+psycopg2-binary>=2.9.9,<3.0.0
+
+# Authentication & Security
+pyjwt>=2.8.0,<3.0.0
+passlib[bcrypt]>=1.7.4,<2.0.0
+python-multipart>=0.0.6,<0.1.0
+
+# Configuration & Validation
+pydantic>=2.5.3,<3.0.0
+pydantic-settings>=2.1.0,<3.0.0
+
+# Task Processing & Caching
+celery>=5.3.4,<6.0.0
+redis>=5.0.1,<6.0.0
+kombu>=5.3.4,<6.0.0
+
+# Rate Limiting
+slowapi>=0.1.9,<0.2.0
+
+# File Handling
+python-magic>=0.4.27,<0.5.0
+aiofiles>=23.2.1,<24.0.0
+
+# AI Providers
+openai>=1.12.0,<2.0.0
+google-genai>=0.4.0,<1.0.0
+anthropic>=0.18.0,<1.0.0
+orjson>=3.9.12,<4.0.0
+tenacity>=8.2.3,<9.0.0
+circuitbreaker>=1.4.0,<2.0.0
+
+# Logging & Monitoring
+structlog>=23.2.0,<24.0.0
+prometheus-client>=0.19.0,<0.20.0
+
+# Email & Communication
+fastapi-mail>=1.4.1,<2.0.0
+itsdangerous>=2.1.2,<3.0.0
+aiosmtplib>=3.0.1,<4.0.0
+jinja2>=3.1.3,<4.0.0
+
+# HTTP Client & WebSockets
+httpx>=0.26.0,<0.27.0
+websockets>=12.0,<13.0
+
+# Utilities
+python-dotenv>=1.0.0,<2.0.0

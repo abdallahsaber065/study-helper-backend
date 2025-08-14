@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+
+{% block title %}Verify Your Email - {{ app_name }}{% endblock %}
+
+{% block header_subtitle %}Account Verification{% endblock %}
+
+{% block content %}
+    <div class="greeting">
+        Hello {{ user_name }}!
+    </div>
+    
+    <div class="message">
+        Thank you for signing up for {{ app_name }}! To get started with your AI-powered study assistant, 
+        we need to verify your email address.
+    </div>
+    
+    <div class="message">
+        Click the button below to verify your email address and activate your account:
+    </div>
+    
+    <div class="button-center">
+        <a href="{{ verification_url }}" class="button">Verify Email Address</a>
+    </div>
+    
+    <div class="security-notice">
+        <strong>Security Notice:</strong> This verification link will expire in 24 hours for your security. 
+        If you didn't create an account with {{ app_name }}, you can safely ignore this email.
+    </div>
+    
+    <div class="alternative-text">
+        <strong>Can't click the button?</strong><br>
+        Copy and paste this link into your browser:<br>
+        <a href="{{ verification_url }}">{{ verification_url }}</a>
+    </div>
+    
+    <div class="message" style="margin-top: 30px;">
+        Once verified, you'll be able to:
+        <ul style="margin: 15px 0; padding-left: 20px; color: #555;">
+            <li>Upload documents and generate AI-powered summaries</li>
+            <li>Create interactive quizzes from your study materials</li>
+            <li>Track your learning progress and analytics</li>
+            <li>Collaborate with others on study sessions</li>
+        </ul>
+    </div>
+    
+    <div class="message">
+        Welcome to the future of studying!
+    </div>
+{% endblock %}

@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+
+{% block title %}Welcome to {{ app_name }}!{% endblock %}
+
+{% block header_subtitle %}Account Successfully Verified{% endblock %}
+
+{% block content %}
+    <div class="greeting">
+        Welcome {{ user_name }}!
+    </div>
+    
+    <div class="message">
+        Congratulations! Your email has been successfully verified and your {{ app_name }} account is now active. 
+        You're ready to start your enhanced learning journey with AI-powered study tools.
+    </div>
+    
+    <div class="message">
+        <strong>What you can do now:</strong>
+    </div>
+    
+    <div style="background-color: #f8f9fa; border-radius: 6px; padding: 20px; margin: 20px 0;">
+        <div style="display: grid; gap: 15px;">
+            <div style="display: flex; align-items: flex-start; gap: 12px;">
+                <div style="background-color: #667eea; color: white; border-radius: 50%; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold; flex-shrink: 0;">1</div>
+                <div>
+                    <strong>Upload Documents</strong><br>
+                    <span style="color: #666; font-size: 14px;">Upload PDFs, text files, and other study materials</span>
+                </div>
+            </div>
+            
+            <div style="display: flex; align-items: flex-start; gap: 12px;">
+                <div style="background-color: #667eea; color: white; border-radius: 50%; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold; flex-shrink: 0;">2</div>
+                <div>
+                    <strong>Generate AI Summaries</strong><br>
+                    <span style="color: #666; font-size: 14px;">Get intelligent summaries of your study materials using advanced AI</span>
+                </div>
+            </div>
+            
+            <div style="display: flex; align-items: flex-start; gap: 12px;">
+                <div style="background-color: #667eea; color: white; border-radius: 50%; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold; flex-shrink: 0;">3</div>
+                <div>
+                    <strong>Create Interactive Quizzes</strong><br>
+                    <span style="color: #666; font-size: 14px;">Generate quizzes automatically from your documents to test your knowledge</span>
+                </div>
+            </div>
+            
+            <div style="display: flex; align-items: flex-start; gap: 12px;">
+                <div style="background-color: #667eea; color: white; border-radius: 50%; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold; flex-shrink: 0;">4</div>
+                <div>
+                    <strong>Track Your Progress</strong><br>
+                    <span style="color: #666; font-size: 14px;">Monitor your learning analytics and study patterns</span>
+                </div>
+            </div>
+            
+            <div style="display: flex; align-items: flex-start; gap: 12px;">
+                <div style="background-color: #667eea; color: white; border-radius: 50%; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold; flex-shrink: 0;">5</div>
+                <div>
+                    <strong>Collaborate & Share</strong><br>
+                    <span style="color: #666; font-size: 14px;">Work with classmates on study sessions and share insights</span>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="message">
+        <strong>Pro Tips to Get Started:</strong>
+        <ul style="margin: 15px 0; padding-left: 20px; color: #555;">
+            <li>Start with a smaller document to familiarize yourself with the AI summary features</li>
+            <li>Use the quiz generator to create study materials for upcoming exams</li>
+            <li>Check your dashboard regularly to track your study progress</li>
+            <li>Explore notification settings to customize your experience</li>
+        </ul>
+    </div>
+    
+    <div class="message">
+        Ready to revolutionize your studying? Log in to your account and start exploring!
+    </div>
+    
+    <div class="message" style="margin-top: 25px; padding-top: 20px; border-top: 1px solid #eee;">
+        <strong>Need help getting started?</strong><br>
+        Our support team is here to help you make the most of {{ app_name }}. 
+        Don't hesitate to reach out if you have any questions.
+    </div>
+    
+    <div class="message">
+        Happy studying!<br>
+        The {{ app_name }} Team
+    </div>
+{% endblock %}

@@ -1,0 +1,121 @@
+[tool.poetry]
+name = "study-assistant-backend"
+version = "0.1.0"
+description = "AI-powered Quiz & Summary Generation Platform Backend"
+authors = ["Study Assistant Team"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+# Core Framework
+fastapi = "^0.110.0"
+uvicorn = {extras = ["standard"], version = "^0.27.0"}
+gunicorn = "^21.2.0"
+
+# Database & ORM
+sqlalchemy = "^2.0.25"
+alembic = "^1.13.1"
+psycopg2-binary = "^2.9.9"
+
+# Authentication & Security
+pyjwt = "^2.8.0"
+passlib = {extras = ["bcrypt"], version = "^1.7.4"}
+python-multipart = "^0.0.6"
+
+# Configuration & Validation
+pydantic = "^2.5.3"
+pydantic-settings = "^2.1.0"
+
+# Task Processing & Caching
+celery = "^5.3.4"
+redis = "^5.0.1"
+
+# Rate Limiting
+slowapi = "^0.1.9"
+
+# File Handling
+python-magic = "^0.4.27"
+
+# Logging & Monitoring
+structlog = "^23.2.0"
+prometheus-client = "^0.19.0"
+
+# Email & Communication
+fastapi-mail = "^1.4.1"
+itsdangerous = "^2.1.2"
+
+# HTTP Client
+httpx = "^0.26.0"
+
+# Utilities
+python-dotenv = "^1.0.0"
+
+[tool.poetry.group.dev.dependencies]
+# Testing
+pytest = "^7.4.4"
+pytest-asyncio = "^0.23.2"
+pytest-cov = "^4.1.0"
+httpx = "^0.26.0"
+
+# Code Quality
+black = "^23.12.1"
+isort = "^5.13.2"
+ruff = "^0.1.9"
+mypy = "^1.8.0"
+
+# Security
+bandit = "^1.7.5"
+
+# Performance Testing
+locust = "^2.20.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 88
+target-version = ['py312']
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+select = ["E", "F", "W", "C90", "I", "N", "D", "UP", "S", "B", "A", "COM", "C4", "DTZ", "T10", "ISC", "ICN", "G", "PIE", "T20", "PT", "Q", "RSE", "RET", "SLF", "SIM", "TID", "TCH", "ARG", "PTH", "ERA", "PD", "PGH", "PL", "TRY", "NPY", "RUF"]
+ignore = ["D100", "D101", "D102", "D103", "D104", "D105", "D106", "D107"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q --cov=app --cov-report=term-missing --cov-report=html"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["*/tests/*", "*/venv/*", "*/.venv/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]

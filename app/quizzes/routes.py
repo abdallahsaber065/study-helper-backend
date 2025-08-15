@@ -40,7 +40,7 @@ from .services import QuizService, QuizAttemptService
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/quizzes", tags=["quizzes"])
+router = APIRouter()
 
 
 @router.post(

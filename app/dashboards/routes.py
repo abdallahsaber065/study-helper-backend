@@ -37,7 +37,7 @@ from .services import (
 
 logger = structlog.get_logger(__name__)
 
-router = APIRouter(prefix="/dashboards", tags=["Dashboards & Collaboration"])
+router = APIRouter()
 
 
 # Pydantic schemas for dashboard endpoints

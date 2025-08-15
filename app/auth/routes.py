@@ -480,7 +480,6 @@ async def reset_password(
     await email_service.send_password_changed_notification(
         to_email=user.email,
         user_name=user.email.split("@")[0],
-        login_url=f"{settings.frontend_url}/login"
     )
     
     return MessageResponse(

@@ -133,10 +133,10 @@ app.include_router(users_router, prefix="/users", tags=["Users"])
 app.include_router(files_router, prefix="/files", tags=["Files"])
 app.include_router(summaries_router, prefix="/summaries", tags=["Summaries"])
 app.include_router(quizzes_router, prefix="/quizzes", tags=["Quizzes"])
-app.include_router(usage_router, tags=["Usage & Quotas"])
-app.include_router(websocket_router, tags=["WebSocket"])
-app.include_router(notifications_router, tags=["Notifications"])
-app.include_router(dashboards_router, tags=["Dashboards"])
+app.include_router(usage_router, prefix="/usage", tags=["Usage & Quotas"])
+app.include_router(websocket_router, prefix="/ws", tags=["WebSocket"])
+app.include_router(notifications_router, prefix="/notifications", tags=["Notifications"])
+app.include_router(dashboards_router, prefix="/dashboards", tags=["Dashboards"])
 
 
 # Global exception handler

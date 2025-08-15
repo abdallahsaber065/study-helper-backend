@@ -16,7 +16,7 @@ from .manager import websocket_manager
 
 logger = structlog.get_logger(__name__)
 
-router = APIRouter(prefix="/ws", tags=["WebSocket"])
+router = APIRouter()
 
 
 @router.websocket("/connect")

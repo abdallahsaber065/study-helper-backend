@@ -32,7 +32,7 @@ from .services import PromptTemplateService, SummaryService
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/summaries", tags=["summaries"])
+router = APIRouter()
 
 
 @router.post(
@@ -54,29 +54,29 @@ async def generate_summary(
     immediately with task information. Use the progress endpoints to monitor
     the generation status.
     """
-    
+
     try:
         summary_service = SummaryService(db)
         quota_manager = QuotaManager(db)
-        
+
         # Check quota availability first
         from decimal import Decimal
         estimated_tokens = 4000  # Rough estimate for summary generation
         estimated_cost = Decimal("0.10")  # Rough cost estimate
-        
+
         quota_check = await quota_manager.check_quota_availability(
             user_id=current_user.id,
             operation_type=OperationType.SUMMARY,
             estimated_tokens=estimated_tokens,
             estimated_cost=estimated_cost,
         )
-        
+
         if not quota_check.can_proceed:
             raise HTTPException(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
                 detail=f"Insufficient quota: {quota_check.reason}"
             )
-        
+
         # Validate summary type
         prompt_service = PromptTemplateService()
         if not prompt_service.validate_summary_type(request.summary_type.value):
@@ -84,7 +84,7 @@ async def generate_summary(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid summary type: {request.summary_type}"
             )
-        
+
         # Create summary record
         summary = summary_service.create_summary(
             user_id=current_user.id,
@@ -97,7 +97,7 @@ async def generate_summary(
             temperature=request.temperature,
             custom_instructions=request.custom_instructions,
         )
-        
+
         # Prepare task configuration
         summary_config = {
             "summary_type": request.summary_type.value,
@@ -107,7 +107,7 @@ async def generate_summary(
             "temperature": request.temperature,
             "custom_instructions": request.custom_instructions,
         }
-        
+
         # Queue background task
         task = generate_summary_task.delay(
             summary_id=summary.id,
@@ -115,15 +115,15 @@ async def generate_summary(
             user_id=current_user.id,
             summary_config=summary_config,
         )
-        
+
         # Update summary with task ID
         summary.task_id = task.id
         db.commit()
-        
+
         logger.info(
             f"Queued summary generation task {task.id} for user {current_user.id}"
         )
-        
+
         return SummaryProgressResponse(
             task_id=task.id,
             summary_id=summary.id,
@@ -131,7 +131,7 @@ async def generate_summary(
             progress_percentage=0,
             current_step="Task queued for processing",
         )
-        
+
     except Exception as e:
         logger.error(f"Error generating summary: {str(e)}")
         raise HTTPException(
@@ -150,30 +150,27 @@ async def list_summaries(
     # Pagination
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
-    
     # Filtering
     status: List[str] = Query(None, description="Filter by status"),
     summary_type: List[str] = Query(None, description="Filter by summary type"),
     ai_provider: List[str] = Query(None, description="Filter by AI provider"),
     search: str = Query(None, description="Search in title and content"),
-    
     # Sorting
     sort_by: str = Query("created_at", description="Sort field"),
     sort_order: str = Query("desc", pattern="^(asc|desc)$", description="Sort order"),
-    
     # Dependencies
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
     """
     Get a paginated list of the user's summaries with optional filtering and sorting.
-    
+
     Supports filtering by status, summary type, AI provider, and full-text search.
     """
-    
+
     try:
         summary_service = SummaryService(db)
-        
+
         filters = SummaryFilters(
             page=page,
             page_size=page_size,
@@ -184,14 +181,14 @@ async def list_summaries(
             sort_by=sort_by,
             sort_order=sort_order,
         )
-        
+
         return summary_service.get_summaries(current_user.id, filters)
-        
+
     except Exception as e:
         logger.error(f"Error listing summaries: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to retrieve summaries"
+            detail="Failed to retrieve summaries",
         )
 
 

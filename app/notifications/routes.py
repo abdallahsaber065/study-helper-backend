@@ -54,7 +54,7 @@ from .services import notification_service
 
 logger = structlog.get_logger(__name__)
 
-router = APIRouter(prefix="/notifications", tags=["Notifications"])
+router = APIRouter()
 
 
 # Notification Management Endpoints

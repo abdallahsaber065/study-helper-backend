@@ -28,7 +28,7 @@ from .services import QuotaManager, UsageTracker
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/usage", tags=["Usage & Quotas"])
+router = APIRouter()
 
 
 # Quota Management Endpoints

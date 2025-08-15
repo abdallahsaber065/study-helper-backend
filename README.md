@@ -35,11 +35,13 @@ AI-powered Quiz & Summary Generation Platform Backend built with FastAPI, Postgr
 ### Installation
 
 1. **Clone and navigate to the backend directory**
+
    ```bash
    cd backend
    ```
 
 2. **Install dependencies**
+
    ```bash
    # Using Poetry (recommended)
    poetry install
@@ -49,26 +51,29 @@ AI-powered Quiz & Summary Generation Platform Backend built with FastAPI, Postgr
    ```
 
 3. **Set up environment variables**
+
    ```bash
    cp .env.example .env
    # Edit .env with your configuration
    ```
 
 4. **Set up the database**
+
    ```bash
    # Run migrations
    poetry run alembic upgrade head
    ```
 
 5. **Start the development server**
+
    ```bash
    poetry run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
    ```
 
 The API will be available at `http://localhost:8000`
 
-- **Documentation**: http://localhost:8000/docs
-- **Health Check**: http://localhost:8000/health
+- **Documentation**: <http://localhost:8000/docs>
+- **Health Check**: <http://localhost:8000/health>
 
 ## Environment Configuration
 
@@ -136,7 +141,7 @@ poetry run alembic downgrade -1
 
 ## Project Structure
 
-```
+```bash
 backend/
 ├── app/
 │   ├── __init__.py
@@ -158,8 +163,9 @@ backend/
 ## API Documentation
 
 Once the server is running, visit:
-- **Swagger UI**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
+
+- **Swagger UI**: <http://localhost:8000/docs>
+- **ReDoc**: <http://localhost:8000/redoc>
 
 ## Contributing
 

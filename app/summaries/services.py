@@ -5,8 +5,8 @@ Service layer for summary operations and prompt template management.
 import logging
 from typing import Dict, List, Optional, Tuple
 
-from sqlalchemy import and_, desc, func
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, desc, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import Summary, SummaryVersion
 from .schemas import SummaryFilters, SummaryListResponse, SummaryResponse
@@ -18,10 +18,10 @@ logger = logging.getLogger(__name__)
 class SummaryService:
     """Service class for summary operations."""
     
-    def __init__(self, db: Session):
+    def __init__(self, db: AsyncSession):
         self.db = db
     
-    def create_summary(
+    async def create_summary(
         self,
         user_id: int,
         file_id: str,
@@ -32,12 +32,14 @@ class SummaryService:
         """Create a new summary record."""
         
         # Verify file exists and belongs to user
-        file_metadata = self.db.query(FileMetadata).filter(
+        stmt = select(FileMetadata).where(
             and_(
                 FileMetadata.id == file_id,
                 FileMetadata.user_id == user_id
             )
-        ).first()
+        )
+        result = await self.db.execute(stmt)
+        file_metadata = result.scalar_one_or_none()
         
         if not file_metadata:
             raise ValueError("File not found or access denied")
@@ -52,31 +54,34 @@ class SummaryService:
         )
         
         self.db.add(summary)
-        self.db.commit()
-        self.db.refresh(summary)
+        await self.db.commit()
+        await self.db.refresh(summary)
         
         logger.info(f"Created summary {summary.id} for user {user_id}")
         return summary
     
-    def get_summary(self, summary_id: str, user_id: int) -> Optional[Summary]:
+    async def get_summary(self, summary_id: str, user_id: int) -> Optional[Summary]:
         """Get a summary by ID, ensuring user owns it."""
         
-        return self.db.query(Summary).filter(
+        stmt = select(Summary).where(
             and_(
                 Summary.id == summary_id,
                 Summary.user_id == user_id,
                 Summary.deleted_at.is_(None)
             )
-        ).first()
+        )
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
     
-    def get_summaries(
+    async def get_summaries(
         self,
         user_id: int,
         filters: SummaryFilters
     ) -> SummaryListResponse:
         """Get paginated list of user's summaries with filters."""
         
-        query = self.db.query(Summary).filter(
+        # Base query
+        stmt = select(Summary).where(
             and_(
                 Summary.user_id == user_id,
                 Summary.deleted_at.is_(None)
@@ -85,32 +90,32 @@ class SummaryService:
         
         # Apply filters
         if filters.status:
-            query = query.filter(Summary.status.in_([s.value for s in filters.status]))
+            stmt = stmt.where(Summary.status.in_([s.value for s in filters.status]))
         
         if filters.summary_type:
-            query = query.filter(Summary.summary_type.in_([t.value for t in filters.summary_type]))
+            stmt = stmt.where(Summary.summary_type.in_([t.value for t in filters.summary_type]))
         
         if filters.ai_provider:
-            query = query.filter(Summary.ai_provider.in_([p.value for p in filters.ai_provider]))
+            stmt = stmt.where(Summary.ai_provider.in_([p.value for p in filters.ai_provider]))
         
         if filters.created_after:
-            query = query.filter(Summary.created_at >= filters.created_after)
+            stmt = stmt.where(Summary.created_at >= filters.created_after)
         
         if filters.created_before:
-            query = query.filter(Summary.created_at <= filters.created_before)
+            stmt = stmt.where(Summary.created_at <= filters.created_before)
         
         if filters.min_quality_score:
-            query = query.filter(Summary.quality_score >= filters.min_quality_score)
+            stmt = stmt.where(Summary.quality_score >= filters.min_quality_score)
         
         if filters.has_user_rating is not None:
             if filters.has_user_rating:
-                query = query.filter(Summary.user_rating.is_not(None))
+                stmt = stmt.where(Summary.user_rating.is_not(None))
             else:
-                query = query.filter(Summary.user_rating.is_(None))
+                stmt = stmt.where(Summary.user_rating.is_(None))
         
         if filters.search_query:
             search = f"%{filters.search_query}%"
-            query = query.filter(
+            stmt = stmt.where(
                 Summary.title.ilike(search) | 
                 Summary.content.ilike(search)
             )
@@ -128,16 +133,21 @@ class SummaryService:
             sort_col = Summary.created_at
         
         if filters.sort_order == "desc":
-            query = query.order_by(desc(sort_col))
+            stmt = stmt.order_by(desc(sort_col))
         else:
-            query = query.order_by(sort_col)
+            stmt = stmt.order_by(sort_col)
         
         # Get total count
-        total = query.count()
+        count_stmt = select(func.count()).select_from(stmt.subquery())
+        total_result = await self.db.execute(count_stmt)
+        total = total_result.scalar()
         
         # Apply pagination
         offset = (filters.page - 1) * filters.page_size
-        summaries = query.offset(offset).limit(filters.page_size).all()
+        paginated_stmt = stmt.offset(offset).limit(filters.page_size)
+        
+        result = await self.db.execute(paginated_stmt)
+        summaries = result.scalars().all()
         
         total_pages = (total + filters.page_size - 1) // filters.page_size
         
@@ -149,7 +159,7 @@ class SummaryService:
             total_pages=total_pages,
         )
     
-    def update_summary(
+    async def update_summary(
         self,
         summary_id: str,
         user_id: int,
@@ -157,7 +167,7 @@ class SummaryService:
     ) -> Optional[Summary]:
         """Update summary metadata."""
         
-        summary = self.get_summary(summary_id, user_id)
+        summary = await self.get_summary(summary_id, user_id)
         if not summary:
             return None
         
@@ -165,34 +175,36 @@ class SummaryService:
             if hasattr(summary, key) and value is not None:
                 setattr(summary, key, value)
         
-        self.db.commit()
-        self.db.refresh(summary)
+        await self.db.commit()
+        await self.db.refresh(summary)
         
         logger.info(f"Updated summary {summary_id} for user {user_id}")
         return summary
     
-    def delete_summary(self, summary_id: str, user_id: int) -> bool:
+    async def delete_summary(self, summary_id: str, user_id: int) -> bool:
         """Soft delete a summary."""
         
-        summary = self.get_summary(summary_id, user_id)
+        summary = await self.get_summary(summary_id, user_id)
         if not summary:
             return False
         
         summary.soft_delete()
-        self.db.commit()
+        await self.db.commit()
         
         logger.info(f"Deleted summary {summary_id} for user {user_id}")
         return True
     
-    def get_user_analytics(self, user_id: int) -> Dict:
+    async def get_user_analytics(self, user_id: int) -> Dict:
         """Get analytics data for a user's summaries."""
         
-        summaries = self.db.query(Summary).filter(
+        stmt = select(Summary).where(
             and_(
                 Summary.user_id == user_id,
                 Summary.deleted_at.is_(None)
             )
-        ).all()
+        )
+        result = await self.db.execute(stmt)
+        summaries = result.scalars().all()
         
         total_summaries = len(summaries)
         completed = len([s for s in summaries if s.status == "completed"])

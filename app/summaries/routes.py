@@ -2,7 +2,6 @@
 API routes for summary generation and management.
 """
 
-import logging
 from typing import Dict, List
 import uuid
 
@@ -30,8 +29,6 @@ from .schemas import (
 )
 from .services import PromptTemplateService, SummaryService
 
-logger = logging.getLogger(__name__)
-
 router = APIRouter()
 
 
@@ -49,7 +46,7 @@ async def generate_summary(
 ):
     """
     Generate an AI-powered summary for a document.
-    
+
     This endpoint queues a background task to generate a summary and returns
     immediately with task information. Use the progress endpoints to monitor
     the generation status.
@@ -61,6 +58,7 @@ async def generate_summary(
 
         # Check quota availability first
         from decimal import Decimal
+
         estimated_tokens = 4000  # Rough estimate for summary generation
         estimated_cost = Decimal("0.10")  # Rough cost estimate
 
@@ -72,21 +70,24 @@ async def generate_summary(
         )
 
         if not quota_check.can_proceed:
+
             raise HTTPException(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail=f"Insufficient quota: {quota_check.reason}"
+                detail=f"Insufficient quota: {quota_check.reason}",
             )
 
         # Validate summary type
         prompt_service = PromptTemplateService()
         if not prompt_service.validate_summary_type(request.summary_type.value):
+
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid summary type: {request.summary_type}"
+                detail=f"Invalid summary type: {request.summary_type}",
             )
 
         # Create summary record
-        summary = summary_service.create_summary(
+
+        summary = await summary_service.create_summary(
             user_id=current_user.id,
             file_id=request.file_id,
             title=request.title,
@@ -101,7 +102,9 @@ async def generate_summary(
         # Prepare task configuration
         summary_config = {
             "summary_type": request.summary_type.value,
-            "ai_provider": request.ai_provider.value if request.ai_provider else "openai",
+            "ai_provider": (
+                request.ai_provider.value if request.ai_provider else "openai"
+            ),
             "ai_model": request.ai_model,
             "max_length": request.max_length,
             "temperature": request.temperature,
@@ -109,6 +112,7 @@ async def generate_summary(
         }
 
         # Queue background task
+
         task = generate_summary_task.delay(
             summary_id=summary.id,
             file_id=request.file_id,
@@ -118,11 +122,7 @@ async def generate_summary(
 
         # Update summary with task ID
         summary.task_id = task.id
-        db.commit()
-
-        logger.info(
-            f"Queued summary generation task {task.id} for user {current_user.id}"
-        )
+        await db.commit()
 
         return SummaryProgressResponse(
             task_id=task.id,
@@ -132,11 +132,13 @@ async def generate_summary(
             current_step="Task queued for processing",
         )
 
+    except HTTPException:
+        raise  # Re-raise HTTPException to preserve status code and detail
     except Exception as e:
-        logger.error(f"Error generating summary: {str(e)}")
+        print(e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to queue summary generation task"
+            detail="Failed to queue summary generation task",
         )
 
 
@@ -151,7 +153,7 @@ async def list_summaries(
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     # Filtering
-    status: List[str] = Query(None, description="Filter by status"),
+    status_filter: List[str] = Query(None, description="Filter by status"),
     summary_type: List[str] = Query(None, description="Filter by summary type"),
     ai_provider: List[str] = Query(None, description="Filter by AI provider"),
     search: str = Query(None, description="Search in title and content"),
@@ -174,7 +176,7 @@ async def list_summaries(
         filters = SummaryFilters(
             page=page,
             page_size=page_size,
-            status=status,
+            status=status_filter,
             summary_type=summary_type,
             ai_provider=ai_provider,
             search_query=search,
@@ -182,10 +184,12 @@ async def list_summaries(
             sort_order=sort_order,
         )
 
-        return summary_service.get_summaries(current_user.id, filters)
+        summaries = await summary_service.get_summaries(current_user.id, filters)
+
+        return summaries
 
     except Exception as e:
-        logger.error(f"Error listing summaries: {str(e)}")
+
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve summaries",
@@ -204,26 +208,26 @@ async def get_summary(
     db: AsyncSession = Depends(get_db_session),
 ):
     """Get detailed information about a specific summary."""
-    
+
     try:
         summary_service = SummaryService(db)
-        summary = summary_service.get_summary(summary_id, current_user.id)
-        
+        summary = await summary_service.get_summary(summary_id, current_user.id)
+
         if not summary:
+
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Summary not found"
+                status_code=status.HTTP_404_NOT_FOUND, detail="Summary not found"
             )
-        
+
         return SummaryResponse.from_orm(summary)
-        
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error retrieving summary {summary_id}: {str(e)}")
+
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to retrieve summary"
+            detail="Failed to retrieve summary",
         )
 
 
@@ -240,37 +244,38 @@ async def update_summary(
     db: AsyncSession = Depends(get_db_session),
 ):
     """Update summary metadata like title, user rating, and feedback."""
-    
+
     try:
         summary_service = SummaryService(db)
-        
-        updates = {}
-        if request.title is not None:
-            updates["title"] = request.title
-        if request.user_rating is not None:
-            updates["user_rating"] = request.user_rating
-        if request.user_feedback is not None:
-            updates["user_feedback"] = request.user_feedback
-        
-        summary = summary_service.update_summary(
+
+        updates = request.dict(exclude_unset=True)
+
+        if not updates:
+
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No update data provided.",
+            )
+
+        summary = await summary_service.update_summary(
             summary_id, current_user.id, **updates
         )
-        
+
         if not summary:
+
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Summary not found"
+                status_code=status.HTTP_404_NOT_FOUND, detail="Summary not found"
             )
-        
+
         return SummaryResponse.from_orm(summary)
-        
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error updating summary {summary_id}: {str(e)}")
+
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to update summary"
+            detail="Failed to update summary",
         )
 
 
@@ -289,26 +294,27 @@ async def regenerate_summary(
 ):
     """
     Regenerate an existing summary with new parameters.
-    
+
     This creates a new version of the summary while preserving the original.
     """
-    
+
     try:
         summary_service = SummaryService(db)
-        summary = summary_service.get_summary(summary_id, current_user.id)
-        
+        summary = await summary_service.get_summary(summary_id, current_user.id)
+
         if not summary:
+
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Summary not found"
+                status_code=status.HTTP_404_NOT_FOUND, detail="Summary not found"
             )
-        
+
         if summary.is_processing:
+
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Summary is already being processed"
+                detail="Summary is already being processed",
             )
-        
+
         # Update summary configuration
         updates = {
             "status": "pending",
@@ -316,22 +322,12 @@ async def regenerate_summary(
             "error_message": None,
             "completed_at": None,
         }
-        
-        if request.ai_provider:
-            updates["ai_provider"] = request.ai_provider.value
-        if request.ai_model:
-            updates["ai_model_used"] = request.ai_model
-        if request.summary_type:
-            updates["summary_type"] = request.summary_type.value
-        if request.max_length:
-            updates["max_length"] = request.max_length
-        if request.temperature:
-            updates["temperature"] = request.temperature
-        if request.custom_instructions:
-            updates["custom_instructions"] = request.custom_instructions
-        
-        summary = summary_service.update_summary(summary_id, current_user.id, **updates)
-        
+        updates.update(request.dict(exclude_unset=True))
+
+        summary = await summary_service.update_summary(
+            summary_id, current_user.id, **updates
+        )
+
         # Prepare task configuration
         summary_config = {
             "summary_type": summary.summary_type,
@@ -341,23 +337,20 @@ async def regenerate_summary(
             "temperature": float(summary.temperature) if summary.temperature else 0.7,
             "custom_instructions": summary.custom_instructions,
         }
-        
+
         # Queue background task
+
         task = generate_summary_task.delay(
             summary_id=summary.id,
             file_id=summary.file_id,
             user_id=current_user.id,
             summary_config=summary_config,
         )
-        
+
         # Update summary with new task ID
         summary.task_id = task.id
-        db.commit()
-        
-        logger.info(
-            f"Queued summary regeneration task {task.id} for user {current_user.id}"
-        )
-        
+        await db.commit()
+
         return SummaryProgressResponse(
             task_id=task.id,
             summary_id=summary.id,
@@ -365,14 +358,14 @@ async def regenerate_summary(
             progress_percentage=0,
             current_step="Task queued for processing",
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error regenerating summary {summary_id}: {str(e)}")
+
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to regenerate summary"
+            detail="Failed to regenerate summary",
         )
 
 
@@ -388,26 +381,24 @@ async def delete_summary(
     db: AsyncSession = Depends(get_db_session),
 ):
     """Soft delete a summary."""
-    
+
     try:
         summary_service = SummaryService(db)
-        success = summary_service.delete_summary(summary_id, current_user.id)
-        
+        success = await summary_service.delete_summary(summary_id, current_user.id)
+
         if not success:
+
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Summary not found"
+                status_code=status.HTTP_404_NOT_FOUND, detail="Summary not found"
             )
-        
-        logger.info(f"Deleted summary {summary_id} for user {current_user.id}")
-        
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error deleting summary {summary_id}: {str(e)}")
+
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to delete summary"
+            detail="Failed to delete summary",
         )
 
 
@@ -423,17 +414,17 @@ async def get_summary_progress(
     db: AsyncSession = Depends(get_db_session),
 ):
     """Get the current progress of a summary generation task."""
-    
+
     try:
         summary_service = SummaryService(db)
-        summary = summary_service.get_summary(summary_id, current_user.id)
-        
+        summary = await summary_service.get_summary(summary_id, current_user.id)
+
         if not summary:
+
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Summary not found"
+                status_code=status.HTTP_404_NOT_FOUND, detail="Summary not found"
             )
-        
+
         # Estimate remaining time (placeholder logic)
         estimated_time_remaining = None
         if summary.is_processing:
@@ -441,8 +432,10 @@ async def get_summary_progress(
             if summary.progress_percentage > 0:
                 # Rough estimate: if we're X% done, remaining time = (100-X)/X * elapsed_time
                 # This is a simplified estimation
-                estimated_time_remaining = max(30, 300 - (summary.progress_percentage * 3))
-        
+                estimated_time_remaining = max(
+                    30, 300 - (summary.progress_percentage * 3)
+                )
+
         return SummaryProgressResponse(
             task_id=summary.task_id or "",
             summary_id=summary.id,
@@ -451,14 +444,14 @@ async def get_summary_progress(
             estimated_time_remaining=estimated_time_remaining,
             current_step=f"Processing: {summary.status}",
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting progress for summary {summary_id}: {str(e)}")
+
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to get summary progress"
+            detail="Failed to get summary progress",
         )
 
 
@@ -473,18 +466,18 @@ async def get_summary_analytics(
     db: AsyncSession = Depends(get_db_session),
 ):
     """Get comprehensive analytics for the user's summaries."""
-    
+
     try:
         summary_service = SummaryService(db)
-        analytics = summary_service.get_user_analytics(current_user.id)
-        
+        analytics = await summary_service.get_user_analytics(current_user.id)
+
         return analytics
-        
+
     except Exception as e:
-        logger.error(f"Error getting analytics for user {current_user.id}: {str(e)}")
+
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to retrieve analytics"
+            detail="Failed to retrieve analytics",
         )
 
 
@@ -496,16 +489,18 @@ async def get_summary_analytics(
 )
 async def get_summary_templates():
     """Get list of available summary template types."""
-    
+
     try:
         prompt_service = PromptTemplateService()
-        return prompt_service.get_available_templates()
-        
+        templates = prompt_service.get_available_templates()
+
+        return templates
+
     except Exception as e:
-        logger.error(f"Error getting templates: {str(e)}")
+
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to retrieve templates"
+            detail="Failed to retrieve templates",
         )
 
 
@@ -522,46 +517,50 @@ async def bulk_summary_operations(
 ):
     """
     Perform bulk operations on multiple summaries.
-    
+
     Supported operations: delete, regenerate, export
     """
-    
+
     try:
         summary_service = SummaryService(db)
         results = {}
-        
+
         for summary_id in request.summary_ids:
             try:
+
                 if request.operation == "delete":
-                    success = summary_service.delete_summary(summary_id, current_user.id)
+                    success = await summary_service.delete_summary(
+                        summary_id, current_user.id
+                    )
                     results[summary_id] = "deleted" if success else "not_found"
-                    
+
                 elif request.operation == "regenerate":
                     # Queue regeneration tasks (simplified)
-                    summary = summary_service.get_summary(summary_id, current_user.id)
+                    summary = await summary_service.get_summary(
+                        summary_id, current_user.id
+                    )
                     if summary and not summary.is_processing:
                         # Implementation would queue regeneration task
                         results[summary_id] = "queued"
+
                     else:
                         results[summary_id] = "not_available"
-                        
+
                 elif request.operation == "export":
                     # Export implementation would go here
                     results[summary_id] = "exported"
-                    
+
             except Exception as e:
-                logger.error(f"Error in bulk operation for {summary_id}: {str(e)}")
+
                 results[summary_id] = "error"
-        
-        logger.info(
-            f"Completed bulk {request.operation} for user {current_user.id}: {len(request.summary_ids)} items"
-        )
-        
+
+            f"Completed bulk '{request.operation}' for user {current_user.id}: {len(request.summary_ids)} items. Results: {results}"
+
         return results
-        
+
     except Exception as e:
-        logger.error(f"Error in bulk operations: {str(e)}")
+
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to perform bulk operations"
+            detail="Failed to perform bulk operations",
         )

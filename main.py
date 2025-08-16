@@ -2,8 +2,9 @@
 
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
+import logging
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
@@ -17,16 +18,20 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Handle application startup and shutdown."""
+
     # Startup
     await init_db()
-    
+
     # Ensure upload directory exists
     from app.files.utils import ensure_upload_directory
+
     ensure_upload_directory()
-    
+
     yield
     # Shutdown
+
     from app.services.email_service import cleanup_email_service
+
     await cleanup_email_service()
     await close_db()
 
@@ -63,6 +68,7 @@ app.add_middleware(
 @app.get("/health", tags=["Health"])
 async def health_check() -> dict:
     """Basic health check endpoint."""
+
     return {
         "status": "healthy",
         "service": settings.app_name,
@@ -74,6 +80,7 @@ async def health_check() -> dict:
 @app.get("/health/detailed", tags=["Health"])
 async def detailed_health_check() -> dict:
     """Detailed health check with dependency status."""
+
     from app.database import check_db_health
     from app.services.email_service import get_email_service
 
@@ -84,7 +91,7 @@ async def detailed_health_check() -> dict:
         email_service = get_email_service()
         email_health = await email_service.health_check()
         email_healthy = email_health["status"] == "healthy"
-    except Exception:
+    except Exception as e:
         email_healthy = False
         email_health = {"status": "unhealthy", "error": "Service unavailable"}
 
@@ -102,6 +109,7 @@ async def detailed_health_check() -> dict:
     }
 
     status_code = 200 if overall_healthy else 503
+
     return JSONResponse(content=health_status, status_code=status_code)
 
 
@@ -109,6 +117,7 @@ async def detailed_health_check() -> dict:
 @app.get("/", tags=["Root"])
 async def root() -> dict:
     """Root endpoint with API information."""
+
     return {
         "message": f"Welcome to {settings.app_name}",
         "version": settings.version,
@@ -135,18 +144,21 @@ app.include_router(summaries_router, prefix="/summaries", tags=["Summaries"])
 app.include_router(quizzes_router, prefix="/quizzes", tags=["Quizzes"])
 app.include_router(usage_router, prefix="/usage", tags=["Usage & Quotas"])
 app.include_router(websocket_router, prefix="/ws", tags=["WebSocket"])
-app.include_router(notifications_router, prefix="/notifications", tags=["Notifications"])
+app.include_router(
+    notifications_router, prefix="/notifications", tags=["Notifications"]
+)
 app.include_router(dashboards_router, prefix="/dashboards", tags=["Dashboards"])
 
 
 # Global exception handler
 @app.exception_handler(Exception)
-async def global_exception_handler(request, exc):
+async def global_exception_handler(request: Request, exc: Exception):
     """Global exception handler for unhandled exceptions."""
+
     if settings.debug:
         # In debug mode, let FastAPI handle the exception normally
         raise exc
-    
+
     # In production, return a generic error message
     return JSONResponse(
         status_code=500,
@@ -159,4 +171,5 @@ async def global_exception_handler(request, exc):
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)

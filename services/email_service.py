@@ -1,7 +1,10 @@
 """
 Email service for sending emails via SMTP.
 """
+import sys
 import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import aiosmtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -15,7 +18,7 @@ logger = get_logger("email_service")
 
 class EmailService:
     """Service for sending emails."""
-    
+
     def __init__(self):
         self.smtp_server = settings.smtp_server
         self.smtp_port = settings.smtp_port
@@ -23,16 +26,16 @@ class EmailService:
         self.smtp_password = settings.smtp_password
         self.sender_email = settings.smtp_sender_email
         self.templates_dir = Path(__file__).parent.parent / "templates" / "emails"
-        
+
         # Create templates directory if it doesn't exist
         self.templates_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Initialize Jinja2 environment
         self.jinja_env = Environment(
             loader=FileSystemLoader(self.templates_dir),
             autoescape=True
         )
-    
+
     async def send_email(
         self, 
         to_email: str, 
@@ -59,39 +62,39 @@ class EmailService:
         try:
             # Load the template
             template = self.jinja_env.get_template(f"{template_name}.html")
-            
+
             # Render the template with context
             html_content = template.render(**context)
-            
+
             # Create the email message
             message = MIMEMultipart("alternative")
             message["Subject"] = subject
             message["From"] = self.sender_email
             message["To"] = to_email
-            
+
             if cc:
                 message["Cc"] = ", ".join(cc)
-            
+
             if bcc:
                 message["Bcc"] = ", ".join(bcc)
-            
+
             # Attach HTML content
             html_part = MIMEText(html_content, "html")
             message.attach(html_part)
-            
+
             # Create a list of all recipients
             recipients = [to_email]
             if cc:
                 recipients.extend(cc)
             if bcc:
                 recipients.extend(bcc)
-            
+
             # Connect to the SMTP server and send the email using aiosmtplib
             async with aiosmtplib.SMTP(hostname=self.smtp_server, port=self.smtp_port) as server:
                 await server.starttls()
                 await server.login(self.smtp_username, self.smtp_password)
                 await server.sendmail(self.sender_email, recipients, message.as_string())
-            
+
             logger.info(
                 "Email sent successfully",
                 to_email=to_email,
@@ -99,7 +102,7 @@ class EmailService:
                 template=template_name
             )
             return True
-        
+
         except Exception as e:
             logger.error(
                 "Failed to send email",
@@ -109,7 +112,7 @@ class EmailService:
                 template=template_name
             )
             return False
-    
+
     async def send_activation_email(self, to_email: str, username: str, token: str) -> bool:
         """
         Send an account activation email.
@@ -123,7 +126,7 @@ class EmailService:
             bool: True if email was sent successfully, False otherwise
         """
         activation_link = f"{settings.frontend_url}/auth/activate?token={token}"
-        
+
         context = {
             "username": username,
             "activation_link": activation_link,
@@ -131,14 +134,14 @@ class EmailService:
             "support_email": settings.support_email,
             "expiry_hours": settings.activation_token_expire_hours
         }
-        
+
         return await self.send_email(
             to_email=to_email,
             subject=f"Activate your {settings.app_name} account",
             template_name="account_activation",
             context=context
         )
-    
+
     async def send_password_reset_email(self, to_email: str, username: str, token: str) -> bool:
         """
         Send a password reset email.
@@ -152,7 +155,7 @@ class EmailService:
             bool: True if email was sent successfully, False otherwise
         """
         reset_link = f"{settings.frontend_url}/auth/reset-password?token={token}"
-        
+
         context = {
             "username": username,
             "reset_link": reset_link,
@@ -160,14 +163,14 @@ class EmailService:
             "support_email": settings.support_email,
             "expiry_hours": settings.password_reset_token_expire_hours
         }
-        
+
         return await self.send_email(
             to_email=to_email,
             subject=f"Reset your {settings.app_name} password",
             template_name="password_reset",
             context=context
         )
-    
+
     async def send_welcome_email(self, to_email: str, username: str) -> bool:
         """
         Send a welcome email after account activation.
@@ -185,7 +188,7 @@ class EmailService:
             "login_url": f"{settings.frontend_url}/auth/login",
             "support_email": settings.support_email
         }
-        
+
         return await self.send_email(
             to_email=to_email,
             subject=f"Welcome to {settings.app_name}!",

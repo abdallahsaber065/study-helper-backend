@@ -4,7 +4,7 @@ A FastAPI-based backend application for the Study Helper project, featuring AI-p
 
 ## 🚀 Features
 
-### Phase 3: File Handling & AI Integration
+### File Handling & AI Integration
 
 - ✅ File upload and management (DOCS, AUDIO, IMAGE)
 - ✅ AI-powered summary generation from multiple files
@@ -12,7 +12,7 @@ A FastAPI-based backend application for the Study Helper project, featuring AI-p
 - ✅ AI file caching for efficiency (Gemini File API integration)
 - ✅ Support for both file-based and text-based content processing
 
-### Phase 4: MCQ and Quiz Functionality
+### MCQ and Quiz Functionality
 
 - ✅ AI-powered Multiple Choice Question (MCQ) generation from files
 - ✅ Question tagging and categorization system
@@ -22,7 +22,7 @@ A FastAPI-based backend application for the Study Helper project, featuring AI-p
 - ✅ Manual MCQ creation and editing
 - ✅ Difficulty level management (Easy, Medium, Hard)
 
-### Phase 5: Community Features
+### Community Features (Under Development)
 
 - ✅ Community creation with unique shareable codes
 - ✅ Role-based access control (Admin, Moderator, Member)
@@ -216,11 +216,11 @@ Once the application is running, access the interactive API documentation:
 - `POST /communities/{id}/subjects` - Add subjects to community
 - `POST /communities/{id}/files` - Associate files with community subjects
 
-## 🎯 Future Enhancements
+## Future Enhancements
 
-- **Phase 6**: Content interaction features (comments, ratings, notifications)
-- **Phase 7**: Advanced analytics and content versioning
-- **Phase 8**: Comprehensive testing and deployment preparation
+- Content interaction features (comments, ratings, notifications)
+- Advanced analytics and content versioning
+- Comprehensive testing and deployment preparation
 
 ## 📝 License
 

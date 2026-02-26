@@ -1,175 +1,161 @@
-"""Main FastAPI application."""
+"""
+FastAPI main application entry point.
+"""
 
-from contextlib import asynccontextmanager
-from typing import AsyncGenerator
-import logging
+import json
+import os
+import uvicorn
 
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import JSONResponse
+# Import logging system first
+from core.logging import setup_logging, get_logger, database_logger
 
-from app.config import get_settings
-from app.database import close_db, init_db
+# Setup logging early
+setup_logging()
+logger = get_logger("main")
 
-settings = get_settings()
+from db_config import get_async_db
+from models.models import Base, User, AiApiKey, AiProviderEnum
+from app import app
+from core.security import get_password_hash, encrypt_api_key
+from core.config import settings
+from sqlalchemy import select
 
-
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Handle application startup and shutdown."""
-
-    # Startup
-    await init_db()
-
-    # Ensure upload directory exists
-    from app.files.utils import ensure_upload_directory
-
-    ensure_upload_directory()
-
-    yield
-    # Shutdown
-
-    from app.services.email_service import cleanup_email_service
-
-    await cleanup_email_service()
-    await close_db()
+os.makedirs("cache", exist_ok=True)
 
 
-# Create FastAPI application
-app = FastAPI(
-    title=settings.app_name,
-    description="AI-powered Quiz & Summary Generation Platform Backend",
-    version=settings.version,
-    debug=settings.debug,
-    lifespan=lifespan,
-    docs_url="/docs" if settings.debug else None,
-    redoc_url="/redoc" if settings.debug else None,
-)
+@app.on_event("startup")
+async def startup_db_client():
+    """Initialize database and default users on startup."""
+    logger.info("Starting database initialization")
 
-# Security middleware
-if settings.environment == "production":
-    app.add_middleware(
-        TrustedHostMiddleware,
-        allowed_hosts=["*"],  # Configure with your actual domain
-    )
-
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origins,
-    allow_credentials=settings.cors_allow_credentials,
-    allow_methods=settings.cors_allow_methods,
-    allow_headers=settings.cors_allow_headers,
-)
-
-
-# Health check endpoints
-@app.get("/health", tags=["Health"])
-async def health_check() -> dict:
-    """Basic health check endpoint."""
-
-    return {
-        "status": "healthy",
-        "service": settings.app_name,
-        "version": settings.version,
-        "environment": settings.environment,
-    }
-
-
-@app.get("/health/detailed", tags=["Health"])
-async def detailed_health_check() -> dict:
-    """Detailed health check with dependency status."""
-
-    from app.database import check_db_health
-    from app.services.email_service import get_email_service
-
-    db_healthy = await check_db_health()
-    
-    # Check email service health
     try:
-        email_service = get_email_service()
-        email_health = await email_service.health_check()
-        email_healthy = email_health["status"] == "healthy"
+        async for db in get_async_db():
+            # Create default admin user if not exists
+            admin_username = settings.default_admin_username
+            admin_email = settings.default_admin_email
+            admin_password = settings.default_admin_password
+            force_reset_admin = settings.force_reset_password_admin
+
+            # Create default free user if not exists
+            free_username = settings.default_free_user_username
+            free_email = settings.default_free_user_email
+            free_password = settings.default_free_user_password
+            force_reset_free = settings.force_reset_password_free
+
+            # Get Gemini API key
+            gemini_api_key = settings.gemini_api_key
+
+            if admin_username and admin_email and admin_password:
+                admin_stmt = select(User).where(User.username == admin_username)
+                admin_result = await db.execute(admin_stmt)
+                admin_user = admin_result.scalar_one_or_none()
+
+                if not admin_user:
+                    logger.info("Creating default admin user", username=admin_username)
+                    admin_user = User(
+                        username=admin_username,
+                        email=admin_email,
+                        password_hash=get_password_hash(admin_password),
+                        first_name="Admin",
+                        last_name="User",
+                        role="admin",
+                        is_active=True,
+                        is_verified=True,
+                    )
+                    db.add(admin_user)
+                    await db.commit()
+                    await db.refresh(admin_user)
+                    logger.info(
+                        "Default admin user created successfully", user_id=admin_user.id
+                    )
+                elif force_reset_admin:
+                    logger.info("Resetting admin user password", username=admin_username)
+                    admin_user.password_hash = get_password_hash(admin_password)
+                    await db.commit()
+                    logger.info("Admin user password reset successfully")
+
+            if free_username and free_email and free_password:
+                free_stmt = select(User).where(User.username == free_username)
+                free_result = await db.execute(free_stmt)
+                free_user = free_result.scalar_one_or_none()
+
+                if not free_user:
+                    logger.info("Creating default free user", username=free_username)
+                    free_user = User(
+                        username=free_username,
+                        email=free_email,
+                        password_hash=get_password_hash(free_password),
+                        first_name="Free",
+                        last_name="User",
+                        role="user",
+                        is_active=True,
+                        is_verified=True,
+                    )
+                    db.add(free_user)
+                    await db.commit()
+                    await db.refresh(free_user)
+                    logger.info(
+                        "Default free user created successfully", user_id=free_user.id
+                    )
+                elif force_reset_free:
+                    logger.info("Resetting free user password", username=free_username)
+                    free_user.password_hash = get_password_hash(free_password)
+                    await db.commit()
+                    logger.info("Free user password reset successfully")
+
+                # Add Gemini API key to free user if provided
+                if gemini_api_key and free_user:
+                    # Check if key already exists
+                    existing_key_stmt = select(AiApiKey).where(
+                        AiApiKey.user_id == free_user.id,
+                        AiApiKey.provider_name == AiProviderEnum.Google,
+                    )
+                    existing_key_result = await db.execute(existing_key_stmt)
+                    existing_key = existing_key_result.scalar_one_or_none()
+
+                    if not existing_key:
+                        logger.info(
+                            "Adding Gemini API key to free user", user_id=free_user.id
+                        )
+                        api_key = AiApiKey(
+                            user_id=free_user.id,
+                            provider_name=AiProviderEnum.Google,
+                            encrypted_api_key=encrypt_api_key(gemini_api_key),
+                            is_active=True,
+                        )
+                        db.add(api_key)
+                        await db.commit()
+                        logger.info("Gemini API key added successfully")
+                    else:
+                        logger.info("Gemini API key already exists for free user")
+        logger.info("Database initialization completed successfully")
+
     except Exception as e:
-        email_healthy = False
-        email_health = {"status": "unhealthy", "error": "Service unavailable"}
-
-    overall_healthy = db_healthy and email_healthy
-
-    health_status = {
-        "status": "healthy" if overall_healthy else "unhealthy",
-        "service": settings.app_name,
-        "version": settings.version,
-        "environment": settings.environment,
-        "dependencies": {
-            "database": "healthy" if db_healthy else "unhealthy",
-            "email_service": email_health,
-        },
-    }
-
-    status_code = 200 if overall_healthy else 503
-
-    return JSONResponse(content=health_status, status_code=status_code)
+        logger.error("Error initializing database", error=str(e), exc_info=True)
+        database_logger.error(
+            "Database initialization failed", error=str(e), exc_info=True
+        )
 
 
-# Root endpoint
-@app.get("/", tags=["Root"])
-async def root() -> dict:
-    """Root endpoint with API information."""
-
-    return {
-        "message": f"Welcome to {settings.app_name}",
-        "version": settings.version,
-        "docs_url": "/docs" if settings.debug else None,
-        "health_url": "/health",
-    }
-
-
-# Include routers
-from app.auth.routes import router as auth_router
-from app.files.routes import router as files_router
-from app.summaries.routes import router as summaries_router
-from app.usage.routes import router as usage_router
-from app.users.routes import router as users_router
-from app.websocket.routes import router as websocket_router
-from app.quizzes.routes import router as quizzes_router
-from app.notifications.routes import router as notifications_router
-from app.dashboards.routes import router as dashboards_router
-
-app.include_router(auth_router, prefix="/auth", tags=["Authentication"])
-app.include_router(users_router, prefix="/users", tags=["Users"])
-app.include_router(files_router, prefix="/files", tags=["Files"])
-app.include_router(summaries_router, prefix="/summaries", tags=["Summaries"])
-app.include_router(quizzes_router, prefix="/quizzes", tags=["Quizzes"])
-app.include_router(usage_router, prefix="/usage", tags=["Usage & Quotas"])
-app.include_router(websocket_router, prefix="/ws", tags=["WebSocket"])
-app.include_router(
-    notifications_router, prefix="/notifications", tags=["Notifications"]
-)
-app.include_router(dashboards_router, prefix="/dashboards", tags=["Dashboards"])
-
-
-# Global exception handler
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    """Global exception handler for unhandled exceptions."""
-
-    if settings.debug:
-        # In debug mode, let FastAPI handle the exception normally
-        raise exc
-
-    # In production, return a generic error message
-    return JSONResponse(
-        status_code=500,
-        content={
-            "detail": "Internal server error",
-            "error_id": "INTERNAL_ERROR",
-        },
-    )
-
-
+# Run the application
 if __name__ == "__main__":
-    import uvicorn
+    # Export OpenAPI schema to a JSON file
+    try:
+        logger.info("Exporting OpenAPI schema")
+        openapi_schema = app.openapi()
+        output_path = "cache/openapi.json"
+        with open(output_path, "w") as f:
+            json.dump(openapi_schema, f, indent=2)
+        logger.info("OpenAPI schema successfully exported", output_path=output_path)
+    except Exception as e:
+        logger.error("Error exporting OpenAPI schema", error=str(e), exc_info=True)
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    logger.info("Starting uvicorn server with reload enabled, ignoring 'log' folder", host="0.0.0.0", port=8000)
+    uvicorn.run(
+        "app:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=False,
+        reload_excludes=["*.pyc", "*.log","*.db", "*.json"],
+        reload_includes=["*.py"],
+    )

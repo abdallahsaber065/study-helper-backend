@@ -214,7 +214,6 @@ class TestEmailVerificationEndpoint:
     """Test email verification endpoint."""
     
     @pytest.mark.asyncio
-    @pytest.mark.asyncio
     async def test_verify_email_success(
         self, 
         async_client: AsyncClient, 

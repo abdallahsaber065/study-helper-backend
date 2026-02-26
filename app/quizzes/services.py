@@ -16,8 +16,9 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import and_, desc, func, or_, text
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import and_, desc, func, or_, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from .models import Quiz, Question, Answer, QuizAttempt, QuestionResponse
 from .schemas import (
@@ -34,10 +35,10 @@ logger = logging.getLogger(__name__)
 class QuizService:
     """Service class for quiz operations and management."""
     
-    def __init__(self, db: Session):
+    def __init__(self, db: AsyncSession):
         self.db = db
     
-    def create_quiz(
+    async def create_quiz(
         self,
         user_id: int,
         file_id: str,
@@ -50,12 +51,15 @@ class QuizService:
         """Create a new quiz record."""
         
         # Verify file exists and belongs to user
-        file_metadata = self.db.query(FileMetadata).filter(
-            and_(
-                FileMetadata.id == file_id,
-                FileMetadata.user_id == user_id
+        result = await self.db.execute(
+            select(FileMetadata).where(
+                and_(
+                    FileMetadata.id == file_id,
+                    FileMetadata.user_id == user_id
+                )
             )
-        ).first()
+        )
+        file_metadata = result.scalar_one_or_none()
         
         if not file_metadata:
             raise ValueError("File not found or access denied")
@@ -71,16 +75,16 @@ class QuizService:
         )
         
         self.db.add(quiz)
-        self.db.commit()
-        self.db.refresh(quiz)
+        await self.db.flush()
+        await self.db.refresh(quiz)
         
         logger.info(f"Created quiz {quiz.id} for user {user_id}")
         return quiz
     
-    def get_quiz(self, quiz_id: str, user_id: int, include_questions: bool = False) -> Optional[Quiz]:
+    async def get_quiz(self, quiz_id: str, user_id: int, include_questions: bool = False) -> Optional[Quiz]:
         """Get a quiz by ID, ensuring user owns it."""
         
-        query = self.db.query(Quiz).filter(
+        stmt = select(Quiz).where(
             and_(
                 Quiz.id == quiz_id,
                 Quiz.user_id == user_id,
@@ -89,20 +93,21 @@ class QuizService:
         )
         
         if include_questions:
-            query = query.options(
+            stmt = stmt.options(
                 selectinload(Quiz.questions).selectinload(Question.answers)
             )
         
-        return query.first()
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
     
-    def get_quizzes(
+    async def get_quizzes(
         self,
         user_id: int,
         filters: QuizFilters
     ) -> QuizListResponse:
         """Get paginated list of user's quizzes with filters."""
         
-        query = self.db.query(Quiz).filter(
+        stmt = select(Quiz).where(
             and_(
                 Quiz.user_id == user_id,
                 Quiz.deleted_at.is_(None)
@@ -111,45 +116,45 @@ class QuizService:
         
         # Apply filters
         if filters.status:
-            query = query.filter(Quiz.status.in_([s.value for s in filters.status]))
+            stmt = stmt.where(Quiz.status.in_([s.value for s in filters.status]))
         
         if filters.difficulty_level:
-            query = query.filter(Quiz.difficulty_level.in_([d.value for d in filters.difficulty_level]))
+            stmt = stmt.where(Quiz.difficulty_level.in_([d.value for d in filters.difficulty_level]))
         
         if filters.ai_provider:
-            query = query.filter(Quiz.ai_provider.in_([p.value for p in filters.ai_provider]))
+            stmt = stmt.where(Quiz.ai_provider.in_([p.value for p in filters.ai_provider]))
         
         if filters.created_after:
-            query = query.filter(Quiz.created_at >= filters.created_after)
+            stmt = stmt.where(Quiz.created_at >= filters.created_after)
         
         if filters.created_before:
-            query = query.filter(Quiz.created_at <= filters.created_before)
+            stmt = stmt.where(Quiz.created_at <= filters.created_before)
         
         if filters.min_quality_score is not None:
-            query = query.filter(Quiz.quality_score >= filters.min_quality_score)
+            stmt = stmt.where(Quiz.quality_score >= filters.min_quality_score)
         
         if filters.has_user_rating is not None:
             if filters.has_user_rating:
-                query = query.filter(Quiz.user_rating.is_not(None))
+                stmt = stmt.where(Quiz.user_rating.is_not(None))
             else:
-                query = query.filter(Quiz.user_rating.is_(None))
+                stmt = stmt.where(Quiz.user_rating.is_(None))
         
         if filters.topic:
-            query = query.filter(Quiz.topics_covered.contains(filters.topic))
+            stmt = stmt.where(Quiz.topics_covered.contains(filters.topic))
         
         if filters.learning_objective:
-            query = query.filter(Quiz.learning_objectives.contains(filters.learning_objective))
+            stmt = stmt.where(Quiz.learning_objectives.contains(filters.learning_objective))
         
         if filters.question_count_min:
-            query = query.filter(Quiz.question_count >= filters.question_count_min)
+            stmt = stmt.where(Quiz.question_count >= filters.question_count_min)
         
         if filters.question_count_max:
-            query = query.filter(Quiz.question_count <= filters.question_count_max)
+            stmt = stmt.where(Quiz.question_count <= filters.question_count_max)
         
         # Search functionality
         if filters.search_query:
             search_term = f"%{filters.search_query}%"
-            query = query.filter(
+            stmt = stmt.where(
                 or_(
                     Quiz.title.ilike(search_term),
                     Quiz.description.ilike(search_term),
@@ -158,23 +163,36 @@ class QuizService:
             )
         
         # Count total results before pagination
-        total = query.count()
+        count_stmt = select(func.count()).select_from(Quiz).where(
+            and_(
+                Quiz.user_id == user_id,
+                Quiz.deleted_at.is_(None)
+            )
+        )
+        if filters.status:
+            count_stmt = count_stmt.where(Quiz.status.in_([s.value for s in filters.status]))
+        
+        count_result = await self.db.execute(count_stmt)
+        total = count_result.scalar()
         
         # Apply sorting
         sort_column = getattr(Quiz, filters.sort_by, Quiz.created_at)
         if filters.sort_order == "desc":
-            query = query.order_by(desc(sort_column))
+            stmt = stmt.order_by(desc(sort_column))
         else:
-            query = query.order_by(sort_column)
+            stmt = stmt.order_by(sort_column)
         
         # Apply pagination
         offset = (filters.page - 1) * filters.page_size
-        quizzes = query.offset(offset).limit(filters.page_size).all()
+        stmt = stmt.offset(offset).limit(filters.page_size)
+        
+        result = await self.db.execute(stmt)
+        quizzes = result.scalars().all()
         
         # Convert to response schema
         quiz_responses = []
         for quiz in quizzes:
-            metrics = self._calculate_quiz_metrics(quiz)
+            metrics = await self._calculate_quiz_metrics(quiz)
             quiz_response = QuizResponse(
                 id=quiz.id,
                 user_id=quiz.user_id,
@@ -213,7 +231,7 @@ class QuizService:
         total_pages = (total + filters.page_size - 1) // filters.page_size
         
         # Generate summary statistics
-        summary_stats = self._calculate_summary_stats(user_id, filters)
+        summary_stats = await self._calculate_summary_stats(user_id, filters)
         
         return QuizListResponse(
             quizzes=quiz_responses,
@@ -224,7 +242,7 @@ class QuizService:
             summary_stats=summary_stats
         )
     
-    def update_quiz(
+    async def update_quiz(
         self,
         quiz_id: str,
         user_id: int,
@@ -232,7 +250,7 @@ class QuizService:
     ) -> Optional[Quiz]:
         """Update quiz metadata and settings."""
         
-        quiz = self.get_quiz(quiz_id, user_id)
+        quiz = await self.get_quiz(quiz_id, user_id)
         if not quiz:
             return None
         
@@ -248,16 +266,16 @@ class QuizService:
             if field in allowed_fields and hasattr(quiz, field):
                 setattr(quiz, field, value)
         
-        self.db.commit()
-        self.db.refresh(quiz)
+        await self.db.flush()
+        await self.db.refresh(quiz)
         
         logger.info(f"Updated quiz {quiz_id} for user {user_id}")
         return quiz
     
-    def delete_quiz(self, quiz_id: str, user_id: int, soft_delete: bool = True) -> bool:
+    async def delete_quiz(self, quiz_id: str, user_id: int, soft_delete: bool = True) -> bool:
         """Delete a quiz (soft delete by default)."""
         
-        quiz = self.get_quiz(quiz_id, user_id)
+        quiz = await self.get_quiz(quiz_id, user_id)
         if not quiz:
             return False
         
@@ -265,26 +283,26 @@ class QuizService:
             quiz.soft_delete()
             logger.info(f"Soft deleted quiz {quiz_id} for user {user_id}")
         else:
-            self.db.delete(quiz)
+            await self.db.delete(quiz)
             logger.info(f"Hard deleted quiz {quiz_id} for user {user_id}")
         
-        self.db.commit()
+        await self.db.flush()
         return True
     
-    def archive_quiz(self, quiz_id: str, user_id: int) -> bool:
+    async def archive_quiz(self, quiz_id: str, user_id: int) -> bool:
         """Archive a quiz."""
         
-        quiz = self.get_quiz(quiz_id, user_id)
+        quiz = await self.get_quiz(quiz_id, user_id)
         if not quiz:
             return False
         
         quiz.archive()
-        self.db.commit()
+        await self.db.flush()
         
         logger.info(f"Archived quiz {quiz_id} for user {user_id}")
         return True
     
-    def get_quiz_with_questions(
+    async def get_quiz_with_questions(
         self,
         quiz_id: str,
         user_id: int,
@@ -293,7 +311,7 @@ class QuizService:
     ) -> Optional[QuizResponse]:
         """Get quiz with all questions and answers, optionally shuffled."""
         
-        quiz = self.get_quiz(quiz_id, user_id, include_questions=True)
+        quiz = await self.get_quiz(quiz_id, user_id, include_questions=True)
         if not quiz:
             return None
         
@@ -352,7 +370,7 @@ class QuizService:
             questions.append(question_response)
         
         # Build complete quiz response
-        metrics = self._calculate_quiz_metrics(quiz)
+        metrics = await self._calculate_quiz_metrics(quiz)
         
         return QuizResponse(
             id=quiz.id,
@@ -388,17 +406,18 @@ class QuizService:
             questions=questions,
         )
     
-    def get_quiz_analytics(self, quiz_id: str, user_id: int) -> Optional[QuizAnalytics]:
+    async def get_quiz_analytics(self, quiz_id: str, user_id: int) -> Optional[QuizAnalytics]:
         """Get comprehensive analytics for a quiz."""
         
-        quiz = self.get_quiz(quiz_id, user_id)
+        quiz = await self.get_quiz(quiz_id, user_id)
         if not quiz:
             return None
         
         # Get all attempts for this quiz
-        attempts = self.db.query(QuizAttempt).filter(
-            QuizAttempt.quiz_id == quiz_id
-        ).all()
+        result = await self.db.execute(
+            select(QuizAttempt).where(QuizAttempt.quiz_id == quiz_id)
+        )
+        attempts = result.scalars().all()
         
         if not attempts:
             return QuizAnalytics(
@@ -441,14 +460,14 @@ class QuizService:
         time_distribution = self._calculate_time_distribution(completion_times)
         
         # Question-level analytics
-        question_analytics = self._calculate_question_analytics(quiz_id)
+        question_analytics = await self._calculate_question_analytics(quiz_id)
         
         # Identify difficult and easy questions
         difficult_questions = [qa["question_id"] for qa in question_analytics if qa.get("success_rate", 1.0) < 0.5]
         easy_questions = [qa["question_id"] for qa in question_analytics if qa.get("success_rate", 0.0) > 0.9]
         
         # Performance vs difficulty analysis
-        performance_vs_difficulty = self._analyze_performance_vs_difficulty(quiz, attempts)
+        performance_vs_difficulty = await self._analyze_performance_vs_difficulty(quiz, attempts)
         
         # Generate improvement suggestions
         suggested_improvements = self._generate_improvement_suggestions(
@@ -467,41 +486,47 @@ class QuizService:
             question_analytics=question_analytics,
             difficult_questions=difficult_questions,
             easy_questions=easy_questions,
-            learning_objectives_mastery=self._calculate_learning_objectives_mastery(quiz_id),
-            topic_mastery=self._calculate_topic_mastery(quiz_id),
-            common_misconceptions=self._identify_common_misconceptions(quiz_id),
+            learning_objectives_mastery=await self._calculate_learning_objectives_mastery(quiz_id),
+            topic_mastery=await self._calculate_topic_mastery(quiz_id),
+            common_misconceptions=await self._identify_common_misconceptions(quiz_id),
             suggested_improvements=suggested_improvements,
             performance_vs_difficulty=performance_vs_difficulty,
-            user_progression_patterns=self._analyze_user_progression(quiz_id)
+            user_progression_patterns=await self._analyze_user_progression(quiz_id)
         )
     
-    def _calculate_quiz_metrics(self, quiz: Quiz) -> QuizMetrics:
+    async def _calculate_quiz_metrics(self, quiz: Quiz) -> QuizMetrics:
         """Calculate comprehensive metrics for a quiz."""
         
         # Question type distribution
-        question_type_counts = self.db.query(
-            Question.question_type,
-            func.count(Question.id)
-        ).filter(Question.quiz_id == quiz.id).group_by(Question.question_type).all()
-        
+        qtype_result = await self.db.execute(
+            select(
+                Question.question_type,
+                func.count(Question.id)
+            ).where(Question.quiz_id == quiz.id).group_by(Question.question_type)
+        )
+        question_type_counts = qtype_result.all()
         question_type_distribution = {qtype: count for qtype, count in question_type_counts}
         
         # Difficulty distribution
-        difficulty_counts = self.db.query(
-            Question.difficulty_level,
-            func.count(Question.id)
-        ).filter(Question.quiz_id == quiz.id).group_by(Question.difficulty_level).all()
-        
+        diff_result = await self.db.execute(
+            select(
+                Question.difficulty_level,
+                func.count(Question.id)
+            ).where(Question.quiz_id == quiz.id).group_by(Question.difficulty_level)
+        )
+        difficulty_counts = diff_result.all()
         difficulty_distribution = {diff: count for diff, count in difficulty_counts}
         
         # Topic coverage
-        topic_counts = self.db.query(
-            Question.topic,
-            func.count(Question.id)
-        ).filter(
-            and_(Question.quiz_id == quiz.id, Question.topic.is_not(None))
-        ).group_by(Question.topic).all()
-        
+        topic_result = await self.db.execute(
+            select(
+                Question.topic,
+                func.count(Question.id)
+            ).where(
+                and_(Question.quiz_id == quiz.id, Question.topic.is_not(None))
+            ).group_by(Question.topic)
+        )
+        topic_counts = topic_result.all()
         topic_coverage = {topic: count for topic, count in topic_counts if topic}
         
         # Success rate calculation
@@ -528,40 +553,39 @@ class QuizService:
             topic_coverage=topic_coverage
         )
     
-    def _calculate_summary_stats(self, user_id: int, filters: QuizFilters) -> Dict[str, Any]:
+    async def _calculate_summary_stats(self, user_id: int, filters: QuizFilters) -> Dict[str, Any]:
         """Calculate summary statistics for quiz list."""
         
-        base_query = self.db.query(Quiz).filter(
+        stmt = select(Quiz).where(
             and_(Quiz.user_id == user_id, Quiz.deleted_at.is_(None))
         )
         
         # Apply same filters as main query
         if filters.status:
-            base_query = base_query.filter(Quiz.status.in_([s.value for s in filters.status]))
+            stmt = stmt.where(Quiz.status.in_([s.value for s in filters.status]))
+        
+        result = await self.db.execute(stmt)
+        filtered_quizzes = result.scalars().all()
         
         stats = {
-            "total_quizzes": base_query.count(),
-            "completed_quizzes": base_query.filter(Quiz.status == "completed").count(),
+            "total_quizzes": len(filtered_quizzes),
+            "completed_quizzes": len([q for q in filtered_quizzes if q.status == "completed"]),
             "average_quality": 0.0,
             "total_attempts": 0,
             "average_questions_per_quiz": 0.0
         }
         
         # Calculate averages
-        quality_avg = base_query.filter(Quiz.quality_score.is_not(None)).with_entities(
-            func.avg(Quiz.quality_score)
-        ).scalar()
-        
-        if quality_avg:
-            stats["average_quality"] = float(quality_avg)
-        
-        attempts_sum = base_query.with_entities(func.sum(Quiz.total_attempts)).scalar()
-        if attempts_sum:
+        if filtered_quizzes:
+            quality_scores = [q.quality_score for q in filtered_quizzes if q.quality_score is not None]
+            if quality_scores:
+                stats["average_quality"] = sum(quality_scores) / len(quality_scores)
+            
+            attempts_sum = sum(q.total_attempts or 0 for q in filtered_quizzes)
             stats["total_attempts"] = attempts_sum
-        
-        questions_avg = base_query.with_entities(func.avg(Quiz.question_count)).scalar()
-        if questions_avg:
-            stats["average_questions_per_quiz"] = float(questions_avg)
+            
+            questions_avg = sum(q.question_count or 0 for q in filtered_quizzes) / len(filtered_quizzes) if filtered_quizzes else 0
+            stats["average_questions_per_quiz"] = questions_avg
         
         return stats
     
@@ -598,17 +622,23 @@ class QuizService:
         
         return distribution
     
-    def _calculate_question_analytics(self, quiz_id: str) -> List[Dict[str, Any]]:
+    async def _calculate_question_analytics(self, quiz_id: str) -> List[Dict[str, Any]]:
         """Calculate detailed analytics for each question."""
         
-        questions = self.db.query(Question).filter(Question.quiz_id == quiz_id).all()
+        result = await self.db.execute(
+            select(Question).where(Question.quiz_id == quiz_id)
+        )
+        questions = result.scalars().all()
         analytics = []
         
         for question in questions:
             # Get response statistics
-            responses = self.db.query(QuestionResponse).filter(
-                QuestionResponse.question_id == question.id
-            ).all()
+            resp_result = await self.db.execute(
+                select(QuestionResponse).where(
+                    QuestionResponse.question_id == question.id
+                )
+            )
+            responses = resp_result.scalars().all()
             
             if not responses:
                 analytics.append({
@@ -630,8 +660,8 @@ class QuizService:
             
             avg_response_time = int(sum(r.response_time_seconds for r in responses) / len(responses))
             
-            # Calculate discrimination index (correlation between question success and overall quiz performance)
-            discrimination_index = self._calculate_discrimination_index(question.id, responses)
+            # Calculate discrimination index
+            discrimination_index = await self._calculate_discrimination_index(question.id, responses)
             
             analytics.append({
                 "question_id": question.id,
@@ -649,23 +679,26 @@ class QuizService:
         
         return analytics
     
-    def _calculate_discrimination_index(self, question_id: str, responses: List[QuestionResponse]) -> Optional[float]:
+    async def _calculate_discrimination_index(self, question_id: str, responses: List[QuestionResponse]) -> Optional[float]:
         """Calculate discrimination index for a question."""
         
-        if len(responses) < 10:  # Need sufficient data
+        if len(responses) < 10:
             return None
         
         # Get overall quiz scores for each response
         attempt_scores = {}
         for response in responses:
-            attempt = self.db.query(QuizAttempt).filter(QuizAttempt.id == response.attempt_id).first()
+            attempt_result = await self.db.execute(
+                select(QuizAttempt).where(QuizAttempt.id == response.attempt_id)
+            )
+            attempt = attempt_result.scalar_one_or_none()
             if attempt and attempt.percentage_score is not None:
                 attempt_scores[response.id] = float(attempt.percentage_score)
         
         if len(attempt_scores) < 10:
             return None
         
-        # Split into high and low performers (top and bottom 27%)
+        # Split into high and low performers
         sorted_scores = sorted(attempt_scores.items(), key=lambda x: x[1], reverse=True)
         n = len(sorted_scores)
         high_n = max(1, int(n * 0.27))
@@ -674,7 +707,7 @@ class QuizService:
         high_performers = [response_id for response_id, _ in sorted_scores[:high_n]]
         low_performers = [response_id for response_id, _ in sorted_scores[-low_n:]]
         
-        # Calculate success rates for high and low performers
+        # Calculate success rates
         high_correct = len([r for r in responses if r.id in high_performers and r.is_correct])
         low_correct = len([r for r in responses if r.id in low_performers and r.is_correct])
         
@@ -683,24 +716,30 @@ class QuizService:
         
         return high_success_rate - low_success_rate
     
-    def _analyze_performance_vs_difficulty(self, quiz: Quiz, attempts: List[QuizAttempt]) -> Dict[str, float]:
+    async def _analyze_performance_vs_difficulty(self, quiz: Quiz, attempts: List[QuizAttempt]) -> Dict[str, float]:
         """Analyze how performance varies by question difficulty."""
         
         performance = {}
         difficulty_levels = ["beginner", "intermediate", "advanced", "expert"]
         
         for difficulty in difficulty_levels:
-            questions = self.db.query(Question).filter(
-                and_(Question.quiz_id == quiz.id, Question.difficulty_level == difficulty)
-            ).all()
+            q_result = await self.db.execute(
+                select(Question).where(
+                    and_(Question.quiz_id == quiz.id, Question.difficulty_level == difficulty)
+                )
+            )
+            questions = q_result.scalars().all()
             
             if not questions:
                 continue
             
             question_ids = [q.id for q in questions]
-            responses = self.db.query(QuestionResponse).filter(
-                QuestionResponse.question_id.in_(question_ids)
-            ).all()
+            resp_result = await self.db.execute(
+                select(QuestionResponse).where(
+                    QuestionResponse.question_id.in_(question_ids)
+                )
+            )
+            responses = resp_result.scalars().all()
             
             if responses:
                 correct_count = len([r for r in responses if r.is_correct])
@@ -710,12 +749,15 @@ class QuizService:
         
         return performance
     
-    def _calculate_learning_objectives_mastery(self, quiz_id: str) -> Optional[Dict[str, float]]:
+    async def _calculate_learning_objectives_mastery(self, quiz_id: str) -> Optional[Dict[str, float]]:
         """Calculate mastery levels for different learning objectives."""
         
-        questions = self.db.query(Question).filter(
-            and_(Question.quiz_id == quiz_id, Question.learning_objective.is_not(None))
-        ).all()
+        result = await self.db.execute(
+            select(Question).where(
+                and_(Question.quiz_id == quiz_id, Question.learning_objective.is_not(None))
+            )
+        )
+        questions = result.scalars().all()
         
         if not questions:
             return None
@@ -726,9 +768,12 @@ class QuizService:
             if not question.learning_objective:
                 continue
             
-            responses = self.db.query(QuestionResponse).filter(
-                QuestionResponse.question_id == question.id
-            ).all()
+            resp_result = await self.db.execute(
+                select(QuestionResponse).where(
+                    QuestionResponse.question_id == question.id
+                )
+            )
+            responses = resp_result.scalars().all()
             
             if responses:
                 correct_count = len([r for r in responses if r.is_correct])
@@ -742,12 +787,15 @@ class QuizService:
         
         return mastery
     
-    def _calculate_topic_mastery(self, quiz_id: str) -> Optional[Dict[str, float]]:
+    async def _calculate_topic_mastery(self, quiz_id: str) -> Optional[Dict[str, float]]:
         """Calculate mastery levels for different topics."""
         
-        questions = self.db.query(Question).filter(
-            and_(Question.quiz_id == quiz_id, Question.topic.is_not(None))
-        ).all()
+        result = await self.db.execute(
+            select(Question).where(
+                and_(Question.quiz_id == quiz_id, Question.topic.is_not(None))
+            )
+        )
+        questions = result.scalars().all()
         
         if not questions:
             return None
@@ -758,9 +806,12 @@ class QuizService:
             if not question.topic:
                 continue
             
-            responses = self.db.query(QuestionResponse).filter(
-                QuestionResponse.question_id == question.id
-            ).all()
+            resp_result = await self.db.execute(
+                select(QuestionResponse).where(
+                    QuestionResponse.question_id == question.id
+                )
+            )
+            responses = resp_result.scalars().all()
             
             if responses:
                 correct_count = len([r for r in responses if r.is_correct])
@@ -768,29 +819,32 @@ class QuizService:
                 success_rate = (correct_count / total_count) * 100 if total_count > 0 else 0.0
                 
                 if question.topic in mastery:
-                    # Average with existing score
                     mastery[question.topic] = (mastery[question.topic] + success_rate) / 2
                 else:
                     mastery[question.topic] = success_rate
         
         return mastery
     
-    def _identify_common_misconceptions(self, quiz_id: str) -> Optional[List[str]]:
+    async def _identify_common_misconceptions(self, quiz_id: str) -> Optional[List[str]]:
         """Identify common misconceptions based on incorrect answers."""
         
-        # This is a simplified implementation
-        # In a production system, this would be more sophisticated
         misconceptions = []
         
-        questions = self.db.query(Question).filter(Question.quiz_id == quiz_id).all()
+        result = await self.db.execute(
+            select(Question).where(Question.quiz_id == quiz_id)
+        )
+        questions = result.scalars().all()
         
         for question in questions:
             if question.question_type != "multiple_choice":
                 continue
             
-            responses = self.db.query(QuestionResponse).filter(
-                QuestionResponse.question_id == question.id
-            ).all()
+            resp_result = await self.db.execute(
+                select(QuestionResponse).where(
+                    QuestionResponse.question_id == question.id
+                )
+            )
+            responses = resp_result.scalars().all()
             
             if not responses:
                 continue
@@ -798,10 +852,10 @@ class QuizService:
             # Analyze incorrect answer patterns
             incorrect_responses = [r for r in responses if not r.is_correct]
             
-            if len(incorrect_responses) > len(responses) * 0.5:  # More than 50% incorrect
+            if len(incorrect_responses) > len(responses) * 0.5:
                 misconceptions.append(f"Common difficulty with: {question.topic or 'unknown topic'}")
         
-        return misconceptions[:5]  # Limit to top 5
+        return misconceptions[:5]
     
     def _generate_improvement_suggestions(
         self,
@@ -815,17 +869,14 @@ class QuizService:
         
         suggestions = []
         
-        # Completion rate suggestions
         if completion_rate < 50:
             suggestions.append("Low completion rate detected. Consider reducing quiz length or difficulty.")
         
-        # Average score suggestions
         if average_score < 60:
             suggestions.append("Low average scores suggest the quiz may be too difficult. Review question difficulty levels.")
         elif average_score > 90:
             suggestions.append("High average scores suggest the quiz may be too easy. Consider adding more challenging questions.")
         
-        # Question-specific suggestions
         difficult_questions = [qa for qa in question_analytics if qa.get("success_rate", 1.0) < 0.3]
         if len(difficult_questions) > len(question_analytics) * 0.3:
             suggestions.append("Multiple questions have very low success rates. Review question clarity and difficulty.")
@@ -834,30 +885,30 @@ class QuizService:
         if len(easy_questions) > len(question_analytics) * 0.3:
             suggestions.append("Many questions have very high success rates. Consider adding more challenging alternatives.")
         
-        # Time-based suggestions
         if attempts:
             avg_time = sum(a.time_spent_seconds for a in attempts if a.time_spent_seconds) / len([a for a in attempts if a.time_spent_seconds])
-            if avg_time > quiz.estimated_time_minutes * 60 * 1.5:  # 50% over estimate
+            if avg_time > quiz.estimated_time_minutes * 60 * 1.5:
                 suggestions.append("Actual completion time significantly exceeds estimate. Consider adjusting time estimate or reducing question count.")
         
-        # Quality suggestions
         low_quality_questions = [qa for qa in question_analytics if qa.get("quality_score", 5.0) < 3.0]
         if len(low_quality_questions) > 0:
             suggestions.append(f"{len(low_quality_questions)} questions have low quality scores. Consider regenerating these questions.")
         
-        return suggestions[:5]  # Limit to top 5 suggestions
+        return suggestions[:5]
     
-    def _analyze_user_progression(self, quiz_id: str) -> Optional[List[Dict[str, Any]]]:
+    async def _analyze_user_progression(self, quiz_id: str) -> Optional[List[Dict[str, Any]]]:
         """Analyze user progression patterns across multiple attempts."""
         
-        # Get users with multiple attempts
-        user_attempts = self.db.query(QuizAttempt).filter(
-            QuizAttempt.quiz_id == quiz_id
-        ).order_by(QuizAttempt.user_id, QuizAttempt.attempt_number).all()
+        result = await self.db.execute(
+            select(QuizAttempt).where(
+                QuizAttempt.quiz_id == quiz_id
+            ).order_by(QuizAttempt.user_id, QuizAttempt.attempt_number)
+        )
+        user_attempts_list = result.scalars().all()
         
         user_progression = {}
         
-        for attempt in user_attempts:
+        for attempt in user_attempts_list:
             if attempt.user_id not in user_progression:
                 user_progression[attempt.user_id] = []
             
@@ -868,14 +919,13 @@ class QuizService:
                 "completed": attempt.status == "completed"
             })
         
-        # Analyze progression patterns
         progression_patterns = []
         
         for user_id, attempts in user_progression.items():
             if len(attempts) > 1:
                 scores = [a["score"] for a in attempts if a["completed"]]
                 if len(scores) > 1:
-                    improvement = scores[-1] - scores[0]  # Last score - first score
+                    improvement = scores[-1] - scores[0]
                     progression_patterns.append({
                         "user_id": user_id,
                         "attempts": len(attempts),
@@ -883,16 +933,16 @@ class QuizService:
                         "final_score": scores[-1] if scores else 0.0
                     })
         
-        return progression_patterns[:10]  # Limit to first 10 users
+        return progression_patterns[:10]
 
 
 class QuizAttemptService:
     """Service class for quiz attempt operations and tracking."""
     
-    def __init__(self, db: Session):
+    def __init__(self, db: AsyncSession):
         self.db = db
     
-    def start_attempt(
+    async def start_attempt(
         self,
         quiz_id: str,
         user_id: int,
@@ -902,33 +952,43 @@ class QuizAttemptService:
         """Start a new quiz attempt."""
         
         # Verify quiz exists and is accessible
-        quiz = self.db.query(Quiz).filter(
-            and_(Quiz.id == quiz_id, Quiz.status == "completed")
-        ).first()
+        quiz_result = await self.db.execute(
+            select(Quiz).where(
+                and_(Quiz.id == quiz_id, Quiz.status == "completed")
+            )
+        )
+        quiz = quiz_result.scalar_one_or_none()
         
         if not quiz:
             raise ValueError("Quiz not found or not available")
         
         # Check attempt limits
         if quiz.max_attempts:
-            existing_attempts = self.db.query(QuizAttempt).filter(
-                and_(QuizAttempt.quiz_id == quiz_id, QuizAttempt.user_id == user_id)
-            ).count()
+            count_result = await self.db.execute(
+                select(func.count()).select_from(QuizAttempt).where(
+                    and_(QuizAttempt.quiz_id == quiz_id, QuizAttempt.user_id == user_id)
+                )
+            )
+            existing_attempts = count_result.scalar()
             
             if existing_attempts >= quiz.max_attempts:
                 raise ValueError("Maximum attempts exceeded")
         
         # Get next attempt number
-        last_attempt = self.db.query(QuizAttempt).filter(
-            and_(QuizAttempt.quiz_id == quiz_id, QuizAttempt.user_id == user_id)
-        ).order_by(desc(QuizAttempt.attempt_number)).first()
+        last_attempt_result = await self.db.execute(
+            select(QuizAttempt).where(
+                and_(QuizAttempt.quiz_id == quiz_id, QuizAttempt.user_id == user_id)
+            ).order_by(desc(QuizAttempt.attempt_number))
+        )
+        last_attempt = last_attempt_result.scalar_one_or_none()
         
         attempt_number = (last_attempt.attempt_number + 1) if last_attempt else 1
         
         # Calculate max possible score
-        total_points = self.db.query(func.sum(Question.points)).filter(
-            Question.quiz_id == quiz_id
-        ).scalar() or Decimal("0.0")
+        total_points_result = await self.db.execute(
+            select(func.sum(Question.points)).where(Question.quiz_id == quiz_id)
+        )
+        total_points = total_points_result.scalar() or Decimal("0.0")
         
         attempt = QuizAttempt(
             quiz_id=quiz_id,
@@ -941,20 +1001,23 @@ class QuizAttemptService:
         )
         
         self.db.add(attempt)
-        self.db.commit()
-        self.db.refresh(attempt)
+        await self.db.flush()
+        await self.db.refresh(attempt)
         
         logger.info(f"Started quiz attempt {attempt.id} for user {user_id}")
         return attempt
     
-    def get_attempt(self, attempt_id: str, user_id: int) -> Optional[QuizAttempt]:
+    async def get_attempt(self, attempt_id: str, user_id: int) -> Optional[QuizAttempt]:
         """Get a quiz attempt by ID."""
         
-        return self.db.query(QuizAttempt).filter(
-            and_(QuizAttempt.id == attempt_id, QuizAttempt.user_id == user_id)
-        ).first()
+        result = await self.db.execute(
+            select(QuizAttempt).where(
+                and_(QuizAttempt.id == attempt_id, QuizAttempt.user_id == user_id)
+            )
+        )
+        return result.scalar_one_or_none()
     
-    def submit_answer(
+    async def submit_answer(
         self,
         attempt_id: str,
         question_id: str,
@@ -965,24 +1028,33 @@ class QuizAttemptService:
     ) -> QuestionResponse:
         """Submit an answer for a question in an attempt."""
         
-        attempt = self.db.query(QuizAttempt).filter(QuizAttempt.id == attempt_id).first()
+        attempt_result = await self.db.execute(
+            select(QuizAttempt).where(QuizAttempt.id == attempt_id)
+        )
+        attempt = attempt_result.scalar_one_or_none()
         if not attempt or attempt.status != "in_progress":
             raise ValueError("Invalid attempt or attempt not in progress")
         
-        question = self.db.query(Question).filter(Question.id == question_id).first()
+        question_result = await self.db.execute(
+            select(Question).where(Question.id == question_id)
+        )
+        question = question_result.scalar_one_or_none()
         if not question or question.quiz_id != attempt.quiz_id:
             raise ValueError("Invalid question for this quiz")
         
         # Check if already answered
-        existing_response = self.db.query(QuestionResponse).filter(
-            and_(QuestionResponse.attempt_id == attempt_id, QuestionResponse.question_id == question_id)
-        ).first()
+        existing_result = await self.db.execute(
+            select(QuestionResponse).where(
+                and_(QuestionResponse.attempt_id == attempt_id, QuestionResponse.question_id == question_id)
+            )
+        )
+        existing_response = existing_result.scalar_one_or_none()
         
         if existing_response:
             raise ValueError("Question already answered")
         
         # Evaluate answer
-        is_correct, points_earned = self._evaluate_answer(
+        is_correct, points_earned = await self._evaluate_answer(
             question, user_answer, selected_answer_ids
         )
         
@@ -1011,12 +1083,12 @@ class QuizAttemptService:
         # Update question analytics
         question.update_analytics(is_correct, response_time_seconds)
         
-        self.db.commit()
+        await self.db.flush()
         
         logger.info(f"Answer submitted for attempt {attempt_id}, question {question_id}")
         return response
     
-    def complete_attempt(
+    async def complete_attempt(
         self,
         attempt_id: str,
         user_id: int,
@@ -1025,7 +1097,7 @@ class QuizAttemptService:
     ) -> QuizAttempt:
         """Complete a quiz attempt."""
         
-        attempt = self.get_attempt(attempt_id, user_id)
+        attempt = await self.get_attempt(attempt_id, user_id)
         if not attempt:
             raise ValueError("Attempt not found")
         
@@ -1038,29 +1110,32 @@ class QuizAttemptService:
         attempt.difficulty_rating = difficulty_rating
         
         # Update quiz analytics
-        quiz = self.db.query(Quiz).filter(Quiz.id == attempt.quiz_id).first()
+        quiz_result = await self.db.execute(
+            select(Quiz).where(Quiz.id == attempt.quiz_id)
+        )
+        quiz = quiz_result.scalar_one_or_none()
         if quiz and attempt.percentage_score is not None:
             quiz.update_analytics(attempt.percentage_score, attempt.time_spent_seconds or 0)
         
-        self.db.commit()
+        await self.db.flush()
         
         logger.info(f"Completed quiz attempt {attempt_id} for user {user_id}")
         return attempt
     
-    def abandon_attempt(self, attempt_id: str, user_id: int) -> QuizAttempt:
+    async def abandon_attempt(self, attempt_id: str, user_id: int) -> QuizAttempt:
         """Abandon a quiz attempt."""
         
-        attempt = self.get_attempt(attempt_id, user_id)
+        attempt = await self.get_attempt(attempt_id, user_id)
         if not attempt:
             raise ValueError("Attempt not found")
         
         attempt.abandon()
-        self.db.commit()
+        await self.db.flush()
         
         logger.info(f"Abandoned quiz attempt {attempt_id} for user {user_id}")
         return attempt
     
-    def get_user_attempts(
+    async def get_user_attempts(
         self,
         user_id: int,
         quiz_id: Optional[str] = None,
@@ -1069,16 +1144,23 @@ class QuizAttemptService:
     ) -> QuizAttemptListResponse:
         """Get paginated list of user's quiz attempts."""
         
-        query = self.db.query(QuizAttempt).filter(QuizAttempt.user_id == user_id)
+        stmt = select(QuizAttempt).where(QuizAttempt.user_id == user_id)
         
         if quiz_id:
-            query = query.filter(QuizAttempt.quiz_id == quiz_id)
+            stmt = stmt.where(QuizAttempt.quiz_id == quiz_id)
         
-        total = query.count()
+        # Count total
+        count_result = await self.db.execute(
+            select(func.count()).select_from(QuizAttempt).where(QuizAttempt.user_id == user_id)
+        )
+        total = count_result.scalar()
         
-        query = query.order_by(desc(QuizAttempt.started_at))
+        stmt = stmt.order_by(desc(QuizAttempt.started_at))
         offset = (page - 1) * page_size
-        attempts = query.offset(offset).limit(page_size).all()
+        stmt = stmt.offset(offset).limit(page_size)
+        
+        result = await self.db.execute(stmt)
+        attempts = result.scalars().all()
         
         # Convert to response schema
         attempt_responses = []
@@ -1117,7 +1199,7 @@ class QuizAttemptService:
             total_pages=total_pages
         )
     
-    def _evaluate_answer(
+    async def _evaluate_answer(
         self,
         question: Question,
         user_answer: Optional[str],
@@ -1130,9 +1212,12 @@ class QuizAttemptService:
                 return False, Decimal("0.0")
             
             # Get correct answers
-            correct_answers = self.db.query(Answer).filter(
-                and_(Answer.question_id == question.id, Answer.is_correct == True)
-            ).all()
+            answer_result = await self.db.execute(
+                select(Answer).where(
+                    and_(Answer.question_id == question.id, Answer.is_correct == True)
+                )
+            )
+            correct_answers = answer_result.scalars().all()
             
             correct_answer_ids = set(a.id for a in correct_answers)
             selected_ids = set(selected_answer_ids)
@@ -1140,7 +1225,6 @@ class QuizAttemptService:
             if correct_answer_ids == selected_ids:
                 return True, question.points
             else:
-                # Check for partial credit
                 if question.allow_partial_credit and correct_answer_ids.intersection(selected_ids):
                     partial_credit = (len(correct_answer_ids.intersection(selected_ids)) / 
                                     len(correct_answer_ids)) * question.points
@@ -1151,9 +1235,12 @@ class QuizAttemptService:
             if not user_answer:
                 return False, Decimal("0.0")
             
-            correct_answer = self.db.query(Answer).filter(
-                and_(Answer.question_id == question.id, Answer.is_correct == True)
-            ).first()
+            correct_result = await self.db.execute(
+                select(Answer).where(
+                    and_(Answer.question_id == question.id, Answer.is_correct == True)
+                )
+            )
+            correct_answer = correct_result.scalar_one_or_none()
             
             if correct_answer and user_answer.lower().strip() == correct_answer.answer_text.lower().strip():
                 return True, question.points
@@ -1163,17 +1250,18 @@ class QuizAttemptService:
             if not user_answer:
                 return False, Decimal("0.0")
             
-            # For text answers, we'd typically need AI evaluation or manual grading
-            # For now, return partial credit and mark for manual review
-            return False, question.points * Decimal("0.5")  # 50% pending review
+            return False, question.points * Decimal("0.5")
         
         elif question.question_type == "fill_in_blank":
             if not user_answer:
                 return False, Decimal("0.0")
             
-            correct_answers = self.db.query(Answer).filter(
-                and_(Answer.question_id == question.id, Answer.is_correct == True)
-            ).all()
+            correct_result = await self.db.execute(
+                select(Answer).where(
+                    and_(Answer.question_id == question.id, Answer.is_correct == True)
+                )
+            )
+            correct_answers = correct_result.scalars().all()
             
             user_text = user_answer.lower().strip()
             if not question.case_sensitive:
@@ -1187,5 +1275,4 @@ class QuizAttemptService:
             
             return False, Decimal("0.0")
         
-        # Default case
         return False, Decimal("0.0")

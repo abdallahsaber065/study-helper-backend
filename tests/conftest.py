@@ -15,10 +15,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from app.config import Settings, get_settings
-from app.database import Base, get_async_db_session
+from app.database import Base, get_db_session, get_async_db_session
 from backend.main import app
-from app.users.models import User
-from app.files.models import FileMetadata
+from app.users.models import User  # noqa: F401 – registers tables in Base.metadata
+from app.files.models import FileMetadata  # noqa: F401 – registers tables in Base.metadata
 from app.auth.utils import create_access_token, hash_password
 
 
@@ -61,42 +61,55 @@ def override_settings(test_settings: TestSettings) -> None:
 
 
 # Database fixtures
+# Use in-memory SQLite with StaticPool so all connections share the same DB.
+# This avoids file-locking and stale-data issues between test runs.
+_TEST_SYNC_URL = "sqlite:///./test_study_assistant_unit.db"
+_TEST_ASYNC_URL = "sqlite+aiosqlite:///./test_study_assistant_unit.db"
+
+
 @pytest.fixture(scope="session")
-def sync_engine(test_settings: TestSettings):
+def sync_engine():
     """Create a synchronous test database engine."""
-    connect_args = {}
-    if "sqlite" in test_settings.database_url:
-        connect_args["check_same_thread"] = False
-    
     engine = create_engine(
-        test_settings.database_url,
-        connect_args=connect_args,
-        poolclass=StaticPool if "sqlite" in test_settings.database_url else None,
+        _TEST_SYNC_URL,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
     )
     return engine
 
 
 @pytest.fixture(scope="session")
-def async_engine(test_settings: TestSettings):
+def async_engine():
     """Create an asynchronous test database engine."""
-    connect_args = {}
-    if "sqlite" in test_settings.database_async_url:
-        connect_args["check_same_thread"] = False
-    
     engine = create_async_engine(
-        test_settings.database_async_url,
-        connect_args=connect_args,
-        poolclass=StaticPool if "sqlite" in test_settings.database_async_url else None,
+        _TEST_ASYNC_URL,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
     )
     return engine
 
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_database(sync_engine):
-    """Create all tables for testing."""
+    """Create all tables once per session, drop stale data first."""
+    Base.metadata.drop_all(bind=sync_engine)
     Base.metadata.create_all(bind=sync_engine)
     yield
     Base.metadata.drop_all(bind=sync_engine)
+
+
+@pytest.fixture(autouse=True)
+async def clean_tables(async_engine):
+    """Truncate all tables before each test for full isolation."""
+    from sqlalchemy import text
+
+    async with async_engine.connect() as conn:
+        # Disable FK constraints temporarily (SQLite syntax)
+        await conn.execute(text("PRAGMA foreign_keys = OFF"))
+        for table in reversed(Base.metadata.sorted_tables):
+            await conn.execute(table.delete())
+        await conn.execute(text("PRAGMA foreign_keys = ON"))
+        await conn.commit()
 
 
 @pytest.fixture
@@ -107,20 +120,20 @@ async def async_session(async_engine) -> AsyncGenerator[AsyncSession, None]:
         class_=AsyncSession,
         expire_on_commit=False,
     )
-    
     async with async_session_maker() as session:
         yield session
-        await session.rollback()
 
 
 @pytest.fixture
 def override_get_async_db_session(async_session: AsyncSession):
-    """Override the get_async_db_session dependency."""
+    """Override both session dependencies so routes use the test database."""
     async def _get_test_db():
         yield async_session
     
+    app.dependency_overrides[get_db_session] = _get_test_db
     app.dependency_overrides[get_async_db_session] = _get_test_db
     yield
+    del app.dependency_overrides[get_db_session]
     del app.dependency_overrides[get_async_db_session]
 
 
@@ -146,12 +159,12 @@ async def async_client(override_get_async_db_session) -> AsyncGenerator[AsyncCli
 # User fixtures
 @pytest.fixture
 async def test_user_data() -> dict:
-    """Test user data."""
+    """Test user data – unverified so that email-verification tests work correctly."""
     return {
         "email": "test@example.com",
         "password": "TestPassword123!",
         "is_active": True,
-        "is_verified": True,
+        "is_verified": False,
     }
 
 
@@ -180,7 +193,6 @@ async def admin_user(async_session: AsyncSession) -> User:
         "hashed_password": hash_password("AdminPassword123!"),
         "is_active": True,
         "is_verified": True,
-        "is_admin": True,
     }
     
     user = User(**user_data)
@@ -330,11 +342,12 @@ async def test_file_metadata(
     file_metadata = FileMetadata(
         id=file_id,
         user_id=test_user.id,
-        filename=filename,
+        stored_filename=f"{file_id}.txt",
         original_filename=filename,
-        content_type="text/plain",
+        mime_type="text/plain",
         file_size=len(sample_file_content),
         file_path=str(file_path),
+        file_hash="test_hash",
     )
     
     async_session.add(file_metadata)

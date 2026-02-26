@@ -91,6 +91,18 @@ class PasswordResetConfirm(BaseModel):
     )
 
 
+class ChangePasswordRequest(BaseModel):
+    """Schema for change password request (authenticated user)."""
+
+    current_password: str = Field(..., description="Current password")
+    new_password: str = Field(
+        ...,
+        min_length=8,
+        max_length=100,
+        description="New password (minimum 8 characters)",
+    )
+
+
 class MessageResponse(BaseModel):
     """Generic message response schema."""
     

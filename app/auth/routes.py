@@ -15,14 +15,17 @@ from app.auth.utils import (
     create_refresh_token,
     hash_password,
     verify_password,
+    verify_token,
 )
 from app.config import get_settings
 from app.database import get_db_session
 from app.schemas.auth import (
+    ChangePasswordRequest,
     LoginRequest,
     MessageResponse,
     PasswordResetConfirm,
     PasswordResetRequest,
+    RefreshTokenRequest,
     Token,
     UserCreate,
     UserResponse,
@@ -225,6 +228,94 @@ async def logout(
     )
 
 
+@router.post("/refresh", response_model=Token)
+async def refresh_token(
+    refresh_data: RefreshTokenRequest,
+    db: AsyncSession = Depends(get_db_session),
+) -> Any:
+    """
+    Refresh access token using a valid refresh token.
+
+    Args:
+        refresh_data: Request body containing the refresh token
+        db: Database session
+
+    Returns:
+        New access and refresh token pair
+
+    Raises:
+        HTTPException: If the refresh token is invalid or expired
+    """
+    payload = verify_token(refresh_data.refresh_token)
+    user_id_str: str | None = payload.get("sub")
+    if not user_id_str:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    stmt = select(User).where(User.id == int(user_id_str))
+    result = await db.execute(stmt)
+    user = result.scalar_one_or_none()
+
+    if not user or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or inactive",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
+    new_access_token = create_access_token(
+        data={"sub": str(user.id)},
+        expires_delta=access_token_expires,
+    )
+    new_refresh_token = create_refresh_token(data={"sub": str(user.id)})
+
+    return Token(
+        access_token=new_access_token,
+        refresh_token=new_refresh_token,
+        token_type="bearer",
+        expires_in=settings.access_token_expire_minutes * 60,
+    )
+
+
+@router.post("/change-password", response_model=MessageResponse)
+async def change_password(
+    change_data: ChangePasswordRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> Any:
+    """
+    Change the current user's password.
+
+    Args:
+        change_data: Current and new password
+        current_user: Authenticated user
+        db: Database session
+
+    Returns:
+        Success message
+
+    Raises:
+        HTTPException: If current password is incorrect
+    """
+    if not verify_password(change_data.current_password, current_user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect",
+        )
+
+    current_user.hashed_password = hash_password(change_data.new_password)
+    await db.commit()
+
+    return MessageResponse(
+        message="Password changed successfully",
+        detail="Your password has been updated.",
+    )
+
+
 @router.post("/verify-email/{token}", response_model=MessageResponse)
 async def verify_email(
     token: str,
@@ -253,7 +344,7 @@ async def verify_email(
     
     if not token_record:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid verification token"
         )
     
@@ -301,45 +392,33 @@ async def verify_email(
 
 @router.post("/resend-verification", response_model=MessageResponse)
 async def resend_verification_email(
-    email: str,
     request: Request,
+    current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db_session),
 ) -> Any:
     """
-    Resend verification email.
-    
+    Resend verification email to the currently authenticated user.
+
     Args:
-        email: User email address
         request: HTTP request object
+        current_user: Authenticated user
         db: Database session
-        
+
     Returns:
         Success message
-        
+
     Raises:
-        HTTPException: If user not found or already verified
+        HTTPException: If user is already verified
     """
-    # Find the user
-    stmt = select(User).where(User.email == email)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
-    
-    if not user:
-        # Don't reveal if user exists for security
-        return MessageResponse(
-            message="If the email exists, a verification link has been sent",
-            detail="Check your inbox for the verification email"
-        )
-    
-    if user.is_verified:
+    if current_user.is_verified:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already verified"
         )
-    
+
     # Send verification email
-    await _send_verification_email(user, request, db)
-    
+    await _send_verification_email(current_user, request, db)
+
     return MessageResponse(
         message="Verification email sent",
         detail="Check your inbox for the verification link"
@@ -448,7 +527,7 @@ async def reset_password(
     
     if not token_record:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid reset token"
         )
     
@@ -485,6 +564,31 @@ async def reset_password(
     return MessageResponse(
         message="Password successfully reset",
         detail="You can now log in with your new password"
+    )
+
+
+@router.post("/reset-password", response_model=MessageResponse)
+async def reset_password_body(
+    password_reset_data: PasswordResetConfirm,
+    db: AsyncSession = Depends(get_db_session),
+) -> Any:
+    """
+    Reset password using a token provided entirely in the request body.
+
+    This is an alternative to ``/reset-password/{token}`` that accepts the
+    token in the JSON body instead of the URL path – useful for JSON clients.
+
+    Args:
+        password_reset_data: New password and reset token
+        db: Database session
+
+    Returns:
+        Success message
+    """
+    return await reset_password(
+        token=password_reset_data.token,
+        password_reset_data=password_reset_data,
+        db=db,
     )
 
 
@@ -536,16 +640,6 @@ async def _send_verification_email(
                 detail="Failed to send verification email"
             )
             
-    except Exception as e:
-        await db.rollback()
-        if isinstance(e, HTTPException):
-            raise e
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to send verification email"
-        )
-        
-    
     except Exception as e:
         await db.rollback()
         if isinstance(e, HTTPException):

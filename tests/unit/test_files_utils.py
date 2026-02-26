@@ -86,10 +86,17 @@ class TestFileValidation:
         with pytest.raises(FileValidationError) as exc_info:
             validate_file(file)
         
-        # On Windows, .exe files are detected as application/x-msdownload
+        # MIME type varies by platform (.exe → x-msdownload on Windows, x-msdos-program on Linux)
         error_message = str(exc_info.value)
         assert "is not allowed" in error_message
-        assert any(mime_type in error_message for mime_type in ["application/x-msdownload", "application/octet-stream"])
+        assert any(
+            mime_type in error_message
+            for mime_type in [
+                "application/x-msdownload",
+                "application/x-msdos-program",
+                "application/octet-stream",
+            ]
+        )
     
     @patch("app.files.utils.settings")
     @patch("app.files.utils.get_mime_type")
@@ -198,7 +205,7 @@ class TestMimeTypeDetection:
     
     def test_get_mime_type_unknown(self):
         """Test MIME type detection for unknown files."""
-        assert get_mime_type("unknown.xyz") == "application/octet-stream"
+        assert get_mime_type("unknown.notarealext123456") == "application/octet-stream"
     
     def test_get_mime_type_no_extension(self):
         """Test MIME type detection for files without extension."""

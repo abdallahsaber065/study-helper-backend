@@ -15,25 +15,34 @@ settings = get_settings()
 # Create the SQLAlchemy base class
 Base = declarative_base()
 
+# Build connect_args for SQLite (required for multi-thread use in tests)
+_sync_connect_args: dict = {}
+_async_connect_args: dict = {}
+if settings.database_url.startswith("sqlite"):
+    _sync_connect_args = {"check_same_thread": False}
+    _async_connect_args = {"check_same_thread": False}
+
 # Sync Engine for migrations and some operations
-sync_engine = create_engine(
-    settings.database_url,
-    pool_size=settings.database_pool_size,
-    max_overflow=settings.database_max_overflow,
-    echo=settings.database_echo,
-)
+_sync_engine_kwargs: dict = {
+    "echo": settings.database_echo,
+    "connect_args": _sync_connect_args,
+}
+if not settings.database_url.startswith("sqlite"):
+    _sync_engine_kwargs["pool_size"] = settings.database_pool_size
+    _sync_engine_kwargs["max_overflow"] = settings.database_max_overflow
 
-# Async Engine for main application
-async_database_url = settings.database_url.replace(
-    "postgresql://", "postgresql+asyncpg://", 1
-)
+sync_engine = create_engine(settings.database_url, **_sync_engine_kwargs)
 
-async_engine = create_async_engine(
-    async_database_url,
-    pool_size=settings.database_pool_size,
-    max_overflow=settings.database_max_overflow,
-    echo=settings.database_echo,
-)
+# Async Engine – use the dedicated async URL from settings
+_async_engine_kwargs: dict = {
+    "echo": settings.database_echo,
+    "connect_args": _async_connect_args,
+}
+if not settings.database_async_url.startswith("sqlite"):
+    _async_engine_kwargs["pool_size"] = settings.database_pool_size
+    _async_engine_kwargs["max_overflow"] = settings.database_max_overflow
+
+async_engine = create_async_engine(settings.database_async_url, **_async_engine_kwargs)
 
 # Session makers
 SessionLocal = sessionmaker(

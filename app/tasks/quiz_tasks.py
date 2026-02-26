@@ -10,7 +10,11 @@ import uuid
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
-from celery import current_task
+try:
+    from celery import current_task
+except ImportError:  # pragma: no cover
+    current_task = None  # type: ignore[assignment]
+
 from sqlalchemy.orm import Session
 
 from .celery_app import celery_app, celery_tasks_settings

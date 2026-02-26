@@ -1,0 +1,43 @@
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: study-assistant-db
+    environment:
+      POSTGRES_USER: study_assistant_user
+      POSTGRES_PASSWORD: Password_00110011
+      POSTGRES_DB: study_assistant
+      TZ: UTC
+    ports:
+      - "5435:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U study_assistant_user -d study_assistant"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - study-assistant-network
+
+  redis:
+    image: redis:8-alpine
+    container_name: study-assistant-redis
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - study-assistant-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  study-assistant-network:
+    driver: bridge

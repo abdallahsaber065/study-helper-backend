@@ -22,7 +22,10 @@ class Settings(BaseSettings):
     port: int = Field(default=8000, description="Server port")
     frontend_url: str = Field(default="http://localhost:3000", description="Frontend URL")
     # Security
-    secret_key: str = Field(..., description="Secret key for JWT tokens")
+    secret_key: str = Field(
+        default="changeme-development-key-please-set-in-production-32chars",
+        description="Secret key for JWT tokens",
+    )
     access_token_expire_minutes: int = Field(
         default=30, description="Access token expiration time in minutes"
     )
@@ -34,7 +37,14 @@ class Settings(BaseSettings):
     )
 
     # Database
-    database_url: str = Field(..., description="PostgreSQL database URL")
+    database_url: str = Field(
+        default="sqlite:///./study_assistant.db",
+        description="Database URL (PostgreSQL for production, SQLite for development/testing)",
+    )
+    database_async_url: str = Field(
+        default="sqlite+aiosqlite:///./study_assistant.db",
+        description="Async database URL",
+    )
     database_echo: bool = Field(
         default=False, description="SQLAlchemy echo SQL queries"
     )
@@ -153,9 +163,11 @@ class Settings(BaseSettings):
 
     @validator("database_url")
     def validate_database_url(cls, v: str) -> str:
-        """Ensure database URL is for PostgreSQL."""
-        if not v.startswith("postgresql"):
-            raise ValueError("DATABASE_URL must be a PostgreSQL connection string")
+        """Validate database URL format."""
+        if not v.startswith(("postgresql", "sqlite")):
+            raise ValueError(
+                "DATABASE_URL must be a PostgreSQL or SQLite connection string"
+            )
         return v
 
     @validator("environment")

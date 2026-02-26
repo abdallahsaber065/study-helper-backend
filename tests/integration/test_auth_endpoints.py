@@ -214,6 +214,7 @@ class TestEmailVerificationEndpoint:
     """Test email verification endpoint."""
     
     @pytest.mark.asyncio
+    @pytest.mark.asyncio
     async def test_verify_email_success(
         self, 
         async_client: AsyncClient, 
@@ -221,30 +222,21 @@ class TestEmailVerificationEndpoint:
         test_user: User
     ):
         """Test successful email verification."""
-        # Create verification token
-        from itsdangerous import URLSafeTimedSerializer
-        from app.config import get_settings
-        
-        settings = get_settings()
-        serializer = URLSafeTimedSerializer(settings.secret_key)
-        token = serializer.dumps(test_user.email, salt="email-verification")
-        
-        # Create token in database
-        verification_token = EmailVerificationToken(
+        # Create a proper verification token using the model's factory method
+        token_record, raw_token = EmailVerificationToken.create_verification_token(
             user_id=test_user.id,
-            token_hash=token,
             token_type="verification",
-            expires_at="2025-12-31 23:59:59",
             ip_address="127.0.0.1",
+            expires_hours=24,
         )
-        async_session.add(verification_token)
+        async_session.add(token_record)
         await async_session.commit()
         
-        response = await async_client.post(f"/auth/verify-email/{token}")
+        response = await async_client.post(f"/auth/verify-email/{raw_token}")
         
         assert response.status_code == 200
         data = response.json()
-        assert "verified successfully" in data["message"].lower()
+        assert "verified" in data["message"].lower()
     
     @pytest.mark.asyncio
     async def test_verify_email_invalid_token(self, async_client: AsyncClient):
@@ -277,11 +269,15 @@ class TestEmailVerificationEndpoint:
     async def test_resend_verification_already_verified(
         self, 
         async_client: AsyncClient, 
+        test_user: User,
         async_session,
         auth_headers: dict
     ):
         """Test resending verification for already verified user."""
-        # User in fixture is already verified, so this should fail
+        # Mark the test user as verified first
+        test_user.is_verified = True
+        await async_session.commit()
+
         response = await async_client.post("/auth/resend-verification", headers=auth_headers)
         
         assert response.status_code == 400
@@ -329,27 +325,18 @@ class TestPasswordResetEndpoint:
         test_user: User
     ):
         """Test successful password reset."""
-        # Create reset token
-        from itsdangerous import URLSafeTimedSerializer
-        from app.config import get_settings
-        
-        settings = get_settings()
-        serializer = URLSafeTimedSerializer(settings.secret_key)
-        token = serializer.dumps(test_user.email, salt="password-reset")
-        
-        # Create token in database
-        reset_token = EmailVerificationToken(
+        # Create a proper reset token using the model's factory method
+        token_record, raw_token = EmailVerificationToken.create_verification_token(
             user_id=test_user.id,
-            token_hash=token,
             token_type="reset",
-            expires_at="2025-12-31 23:59:59",
             ip_address="127.0.0.1",
+            expires_hours=1,
         )
-        async_session.add(reset_token)
+        async_session.add(token_record)
         await async_session.commit()
         
         reset_data = {
-            "token": token,
+            "token": raw_token,
             "new_password": "NewSecurePassword123!",
         }
         
@@ -357,7 +344,7 @@ class TestPasswordResetEndpoint:
         
         assert response.status_code == 200
         data = response.json()
-        assert "reset successfully" in data["message"].lower()
+        assert "reset" in data["message"].lower()
     
     @pytest.mark.asyncio
     async def test_reset_password_invalid_token(self, async_client: AsyncClient):

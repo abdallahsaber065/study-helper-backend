@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.dependencies import get_current_user
 from ..database import get_db_session
-from ..tasks.summary_tasks import generate_summary_task
 from ..usage.services import QuotaManager
 from ..usage.schemas import OperationType
 from ..users.models import User
@@ -112,6 +111,7 @@ async def generate_summary(
         }
 
         # Queue background task
+        from ..tasks.summary_tasks import generate_summary_task
 
         task = generate_summary_task.delay(
             summary_id=summary.id,
@@ -339,6 +339,7 @@ async def regenerate_summary(
         }
 
         # Queue background task
+        from ..tasks.summary_tasks import generate_summary_task
 
         task = generate_summary_task.delay(
             summary_id=summary.id,
